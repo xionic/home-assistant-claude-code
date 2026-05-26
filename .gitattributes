@@ -1,0 +1,10 @@
+# Shell scripts must keep LF line endings — CRLF will break them in Docker (Linux)
+*.sh text eol=lf
+
+# Docker and config files: LF
+Dockerfile text eol=lf
+*.yaml text eol=lf
+
+# Windows-friendly text files: auto
+*.md text eol=auto
+LICENSE text eol=auto
