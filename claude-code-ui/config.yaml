@@ -1,12 +1,11 @@
 name: "Claude Code UI"
-version: "1.0.0"
+version: "2.1.9"
 slug: "claude-code-ui"
-description: "Claude Code with a mobile-friendly web UI. Chat, file explorer, and direct HA integration."
+description: "Claude Code in your browser with Home Assistant integration and mobile-friendly chat UI."
 url: "https://github.com/xionic/home-assistant-claude-code"
 arch:
   - aarch64
   - amd64
-  - armv7
 startup: services
 boot: manual
 ingress: true
@@ -19,13 +18,21 @@ hassio_role: manager
 map:
   - config:rw
 options:
+  anthropic_api_key: ""
+  ha_token: ""
   ha_smart_context: true
-  enable_ha_mcp: true
+  enable_ha_mcp: false
+  bypass_permissions: false
+  debug: false
   persistent_apk_packages: []
   persistent_pip_packages: []
 schema:
+  anthropic_api_key: str
+  ha_token: str
   ha_smart_context: bool
   enable_ha_mcp: bool
+  bypass_permissions: bool
+  debug: bool
   persistent_apk_packages:
     - str
   persistent_pip_packages:

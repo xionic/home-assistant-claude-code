@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # HA Smart Context — generates a CLAUDE.md with Home Assistant context
-# Claude Code auto-loads CLAUDE.md from HOME, giving every session HA awareness
+# Written to ~/.claude/CLAUDE.md (user memory) so Claude Code auto-loads it for
+# every session regardless of the working directory.
 #
 # Adapted from heytcass/home-assistant-addons (MIT)
 # https://github.com/heytcass/home-assistant-addons
@@ -12,7 +13,7 @@
 #   ha-context --help   Show usage
 
 SUPERVISOR_URL="http://supervisor"
-OUTPUT_FILE="${HOME}/CLAUDE.md"
+OUTPUT_FILE="${HOME}/.claude/CLAUDE.md"
 FULL_MODE=false
 
 # Parse arguments
@@ -251,25 +252,31 @@ DIVIDER
 
     cat >> "$tmp_file" << 'APIREF'
 
-## API Access
+## Live Home Assistant Access — USE THESE TOOLS
 
-You have full access to the Home Assistant APIs from this terminal:
+There is **no Home Assistant MCP server**. Interact with HA using these
+pre-installed CLI tools via Bash. Authentication is automatic via
+`$SUPERVISOR_TOKEN` — **never ask the user for a token**.
 
 ```bash
-# Supervisor API
-curl -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/core/info
+# ha-ws-client — entity states, service calls, templates, registry (WebSocket API)
+ha-ws-client state sensor.car_12v_battery_voltage --json
+ha-ws-client states-filter "sensor.*" --json
+ha-ws-client call light turn_on '{"entity_id": "light.living_room", "brightness_pct": 80}'
+ha-ws-client template '{{ states("sensor.temperature") }}'
+ha-ws-client entities battery --json          # search the entity registry
 
-# Entity states
+# ha-lovelace — dashboards (WebSocket; REST /api/lovelace/* returns 404, do NOT use it)
+ha-lovelace list                              # list storage-mode dashboards
+ha-lovelace get my-dashboard > /tmp/d.json    # fetch a dashboard config
+ha-lovelace save /tmp/d.json my-dashboard     # save it back
+
+# REST is fine for states/services only:
 curl -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/core/api/states
-
-# Call a service
-curl -X POST -H "Authorization: Bearer $SUPERVISOR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"entity_id": "light.living_room"}' \
-  http://supervisor/core/api/services/light/turn_on
 ```
 
-Available endpoints: `states`, `services`, `config`, `events`, `error_log`, `history/period`
+For YAML-mode dashboards (not listed by `ha-lovelace list`), edit the YAML files
+in `/config` directly. See the `homeassistant-config` skill for YAML patterns.
 APIREF
 
     chmod 644 "$tmp_file"

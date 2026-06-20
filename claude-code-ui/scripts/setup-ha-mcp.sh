@@ -1,4 +1,6 @@
-#!/usr/bin/with-contenv bashio
+#!/bin/bash
+# shellcheck source=/dev/null
+[[ -z "${BASHIO_VERSION:-}" ]] && source /usr/lib/bashio/bashio.sh
 # Setup ha-mcp (Home Assistant MCP Server) for Claude Code
 # Configures Claude Code to use ha-mcp for Home Assistant tool calls
 #

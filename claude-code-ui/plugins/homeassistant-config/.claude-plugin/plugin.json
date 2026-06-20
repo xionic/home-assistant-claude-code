@@ -1,0 +1,24 @@
+{
+  "name": "homeassistant-config",
+  "description": "Create, modify, and troubleshoot Home Assistant configuration files and Lovelace dashboards",
+  "version": "1.5.2",
+  "author": {
+    "name": "claude-homeassistant-plugins"
+  },
+  "agents": [
+    "./agents/ha-suggestions.md"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/validate-before-save.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

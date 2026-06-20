@@ -1,9 +1,8 @@
 build_from:
   aarch64: ghcr.io/home-assistant/aarch64-base:3.21
   amd64: ghcr.io/home-assistant/amd64-base:3.21
-  armv7: ghcr.io/home-assistant/armv7-base:3.21
 labels:
-  org.opencontainers.image.title: "Claude Code UI"
-  org.opencontainers.image.description: "Claude Code with mobile-friendly web UI for Home Assistant"
+  org.opencontainers.image.title: "HA AI Assistant"
+  org.opencontainers.image.description: "AI coding assistant with Home Assistant integration and mobile-friendly chat UI."
   org.opencontainers.image.source: "https://github.com/xionic/home-assistant-claude-code"
-  org.opencontainers.image.licenses: "AGPL-3.0"
+  org.opencontainers.image.licenses: "MIT"
