@@ -1,3 +1,6 @@
+## 1.0.4
+- Context token indicator above the input box shows how many tokens the next send will consume and what % of the model's context window that represents
+
 ## 1.0.3
 - /usage now shows token counts (input, output, cache read/write, total) and explains what turns means
 

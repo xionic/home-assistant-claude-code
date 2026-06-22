@@ -207,6 +207,8 @@ function handleServerMessage(msg) {
       usage.outputTokens += msg.outputTokens || 0;
       usage.cacheReadTokens  += msg.cacheReadTokens  || 0;
       usage.cacheWriteTokens += msg.cacheWriteTokens || 0;
+      lastCtxTokens = (msg.inputTokens || 0) + (msg.outputTokens || 0);
+      updateCtxHint();
       isRunning = false;
       updateSendBtn();
       break;
@@ -410,6 +412,23 @@ const MODEL_LABELS = {
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
 };
+const MODEL_CTX = {
+  'claude-opus-4-8': 1_000_000,
+  'claude-sonnet-4-6': 1_000_000,
+  'claude-haiku-4-5-20251001': 200_000,
+};
+
+let lastCtxTokens = 0;
+const ctxTokensEl = document.getElementById('ctx-tokens');
+
+function updateCtxHint() {
+  if (!lastCtxTokens) { ctxTokensEl.classList.add('hidden'); return; }
+  const ctxWindow = MODEL_CTX[modelSelect.value] || 200_000;
+  const pct = (lastCtxTokens / ctxWindow * 100).toFixed(1);
+  const kStr = ctxWindow >= 1_000_000 ? `${ctxWindow / 1_000_000}M` : `${ctxWindow / 1_000}K`;
+  ctxTokensEl.textContent = `~${lastCtxTokens.toLocaleString()} ctx tokens (${pct}% of ${kStr})`;
+  ctxTokensEl.classList.remove('hidden');
+}
 function ensureModelOption(id) {
   if ([...modelSelect.options].some((o) => o.value === id)) return;
   const opt = document.createElement('option');
@@ -790,6 +809,8 @@ function clearScreen() {
   lastAssistantBubble = null;
   thinkingEl = null;
   usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  lastCtxTokens = 0;
+  updateCtxHint();
 }
 
 function showHelp() {
@@ -823,7 +844,7 @@ document.addEventListener('click', (e) => {
   const storedModel = localStorage.getItem('model');
   if (storedModel) { ensureModelOption(storedModel); modelSelect.value = storedModel; }
 }
-modelSelect.onchange = () => localStorage.setItem('model', modelSelect.value);
+modelSelect.onchange = () => { localStorage.setItem('model', modelSelect.value); updateCtxHint(); };
 
 // Restore + persist the permission mode so it survives navigating away
 permModeSelect.value = localStorage.getItem('permMode') || 'ask';
