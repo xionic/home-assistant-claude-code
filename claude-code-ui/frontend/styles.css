@@ -254,7 +254,55 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
   border-bottom-left-radius: 4px;
 }
 
-.bubble-content { white-space: pre-wrap; }
+.bubble-user .bubble-content { white-space: pre-wrap; }
+
+/* Markdown rendering in assistant bubbles */
+.bubble-assistant .bubble-content p { margin-bottom: 0.65em; }
+.bubble-assistant .bubble-content p:last-child { margin-bottom: 0; }
+.bubble-assistant .bubble-content h1,
+.bubble-assistant .bubble-content h2,
+.bubble-assistant .bubble-content h3,
+.bubble-assistant .bubble-content h4 {
+  font-weight: 600; margin: 0.75em 0 0.3em; line-height: 1.3;
+}
+.bubble-assistant .bubble-content h1 { font-size: 1.2em; }
+.bubble-assistant .bubble-content h2 { font-size: 1.1em; }
+.bubble-assistant .bubble-content h3,
+.bubble-assistant .bubble-content h4 { font-size: 1em; }
+.bubble-assistant .bubble-content ul,
+.bubble-assistant .bubble-content ol { padding-left: 1.5em; margin-bottom: 0.65em; }
+.bubble-assistant .bubble-content li { margin-bottom: 0.15em; }
+.bubble-assistant .bubble-content code {
+  font-family: monospace; font-size: 0.875em;
+  background: var(--surface-2); padding: 0.1em 0.35em;
+  border-radius: 3px; color: #c9d1d9;
+}
+.bubble-assistant .bubble-content pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); padding: 10px 12px;
+  overflow-x: auto; margin-bottom: 0.65em; white-space: pre;
+}
+.bubble-assistant .bubble-content pre code {
+  background: none; padding: 0; font-size: 0.85em; color: var(--text-muted);
+}
+.bubble-assistant .bubble-content table {
+  border-collapse: collapse; width: 100%; margin-bottom: 0.65em; font-size: 0.9em;
+}
+.bubble-assistant .bubble-content th,
+.bubble-assistant .bubble-content td {
+  border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+}
+.bubble-assistant .bubble-content th { background: var(--surface-2); font-weight: 600; }
+.bubble-assistant .bubble-content tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+.bubble-assistant .bubble-content blockquote {
+  border-left: 3px solid var(--border); padding-left: 12px;
+  color: var(--text-muted); margin: 0.5em 0 0.65em;
+}
+.bubble-assistant .bubble-content hr { border: none; border-top: 1px solid var(--border); margin: 0.75em 0; }
+.bubble-assistant .bubble-content a { color: var(--accent); text-decoration: none; }
+.bubble-assistant .bubble-content a:hover { text-decoration: underline; }
+.bubble-assistant .bubble-content strong { font-weight: 600; }
+.bubble-assistant .bubble-content em { font-style: italic; }
 
 /* ── Tool call (collapsible) ── */
 .tool-call {

@@ -234,12 +234,18 @@ function appendUserBubble(text) {
   scrollBottom();
 }
 
+function renderMarkdown(el, raw) {
+  el.innerHTML = marked.parse(raw);
+}
+
 function appendAssistantText(text) {
   if (!lastAssistantBubble) {
     lastAssistantBubble = mkBubble('assistant');
     messagesEl.appendChild(lastAssistantBubble);
   }
-  lastAssistantBubble.querySelector('.bubble-content').textContent += text;
+  const content = lastAssistantBubble.querySelector('.bubble-content');
+  content._rawMd = (content._rawMd || '') + text;
+  renderMarkdown(content, content._rawMd);
   scrollBottom();
 }
 
@@ -349,7 +355,9 @@ function appendErrorBubble(message) {
 function appendInfoBubble(text) {
   lastAssistantBubble = null;
   const div = mkBubble('assistant');
-  div.querySelector('.bubble-content').textContent = text;
+  const content = div.querySelector('.bubble-content');
+  content._rawMd = text;
+  renderMarkdown(content, text);
   messagesEl.appendChild(div);
   scrollBottom();
 }
