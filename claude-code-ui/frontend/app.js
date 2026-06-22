@@ -543,6 +543,7 @@ inputForm.onsubmit = (e) => {
   if (ui) {
     runUiCommand(ui.name);
     promptInput.value = '';
+    localStorage.removeItem('draft');
     resizeTextarea();
     updateSendBtn();
     return;
@@ -552,6 +553,7 @@ inputForm.onsubmit = (e) => {
 
   appendUserBubble(text);
   promptInput.value = '';
+  localStorage.removeItem('draft');
   resizeTextarea();
   isRunning = true;
   usage.messages++;
@@ -828,6 +830,7 @@ promptInput.oninput = () => {
   resizeTextarea();
   updateSendBtn();
   updateCmdMenu();
+  localStorage.setItem('draft', promptInput.value);
 };
 
 promptInput.onblur = () => setTimeout(hideCmdMenu, 120);
@@ -877,5 +880,11 @@ function scrollBottom() {
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────
+
+// Restore any draft the user was typing before navigating away
+{
+  const draft = localStorage.getItem('draft');
+  if (draft) { promptInput.value = draft; resizeTextarea(); updateSendBtn(); }
+}
 
 connect();
