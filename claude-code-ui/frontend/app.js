@@ -50,7 +50,7 @@ let lastAssistantBubble = null;
 let thinkingEl = null;
 
 // Session usage totals (for /usage), accumulated from result events
-let usage = { messages: 0, turns: 0, cost: 0 };
+let usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
 // Multi-session state (sourced from Claude Code's on-disk store via the server)
 let sessions = [];
@@ -201,8 +201,12 @@ function handleServerMessage(msg) {
       hideThinking();
       lastAssistantBubble = null;
       appendResultLine(msg);
-      usage.turns += msg.turns || 0;
-      usage.cost  += msg.cost  || 0;
+      usage.turns       += msg.turns       || 0;
+      usage.cost        += msg.cost        || 0;
+      usage.inputTokens  += msg.inputTokens  || 0;
+      usage.outputTokens += msg.outputTokens || 0;
+      usage.cacheReadTokens  += msg.cacheReadTokens  || 0;
+      usage.cacheWriteTokens += msg.cacheWriteTokens || 0;
       isRunning = false;
       updateSendBtn();
       break;
@@ -372,7 +376,13 @@ function renderHistory(items) {
       case 'tool_use':    lastAssistantBubble = null; appendToolUse(it.id, it.name, it.input); break;
       case 'tool_result': appendToolResult(it.id, it.output, it.isError); break;
       case 'result':      lastAssistantBubble = null; appendResultLine(it);
-                          usage.turns += it.turns || 0; usage.cost += it.cost || 0; break;
+                          usage.turns        += it.turns       || 0;
+                          usage.cost         += it.cost        || 0;
+                          usage.inputTokens  += it.inputTokens  || 0;
+                          usage.outputTokens += it.outputTokens || 0;
+                          usage.cacheReadTokens  += it.cacheReadTokens  || 0;
+                          usage.cacheWriteTokens += it.cacheWriteTokens || 0;
+                          break;
       case 'error':       lastAssistantBubble = null; appendErrorBubble(it.message); break;
     }
   }
@@ -477,14 +487,21 @@ function closeSessions() {
 
 // ── /usage ───────────────────────────────────────────────────────────────────
 function showUsage() {
-  appendInfoBubble(
-    "⚠️ Real Claude usage/limit information isn't available through this UI " +
-    "(the full /usage breakdown is an interactive-only feature). " +
-    'The figures below are just this session\'s local activity:\n\n' +
-    `- Messages sent: ${usage.messages}\n` +
-    `- Turns: ${usage.turns}\n` +
-    `- Cost: $${usage.cost.toFixed(4)}`
-  );
+  const totalTokens = usage.inputTokens + usage.outputTokens;
+  const lines = [
+    `Messages sent: ${usage.messages}`,
+    `Turns: ${usage.turns}  (tool calls each add a turn)`,
+    ``,
+    `Tokens (this chat):`,
+    `  Input:        ${usage.inputTokens.toLocaleString()}`,
+    `  Output:       ${usage.outputTokens.toLocaleString()}`,
+    `  Cache read:   ${usage.cacheReadTokens.toLocaleString()}`,
+    `  Cache write:  ${usage.cacheWriteTokens.toLocaleString()}`,
+    `  Total:        ${totalTokens.toLocaleString()}`,
+    ``,
+    `Cost: $${usage.cost.toFixed(4)}`,
+  ];
+  appendInfoBubble(lines.join('\n'));
 }
 
 function mkBubble(role) {
@@ -772,7 +789,7 @@ function clearScreen() {
   toolCallEls.clear();
   lastAssistantBubble = null;
   thinkingEl = null;
-  usage = { messages: 0, turns: 0, cost: 0 };
+  usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 }
 
 function showHelp() {

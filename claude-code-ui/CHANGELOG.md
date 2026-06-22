@@ -1,3 +1,6 @@
+## 1.0.3
+- /usage now shows token counts (input, output, cache read/write, total) and explains what turns means
+
 ## 1.0.2
 - Typed-but-not-submitted text is preserved when navigating away and back
 

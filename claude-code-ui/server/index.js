@@ -679,6 +679,10 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
           success: event.subtype === 'success',
           cost: event.total_cost_usd,
           turns: event.num_turns,
+          inputTokens: event.usage?.input_tokens ?? 0,
+          outputTokens: event.usage?.output_tokens ?? 0,
+          cacheReadTokens: event.usage?.cache_read_input_tokens ?? 0,
+          cacheWriteTokens: event.usage?.cache_creation_input_tokens ?? 0,
         });
       }
     }
