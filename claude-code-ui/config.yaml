@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "2.4.2"
+version: "1.0.0"
 slug: "claude-code-ui"
 description: "Claude Code in your browser with Home Assistant integration and mobile-friendly chat UI."
 url: "https://github.com/xionic/home-assistant-claude-code"
@@ -10,7 +10,7 @@ startup: services
 boot: manual
 ingress: true
 ingress_port: 7681
-panel_icon: mdi:robot-outline
+panel_icon: mdi:creation
 homeassistant_api: true
 auth_api: true
 hassio_api: true
