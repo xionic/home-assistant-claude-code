@@ -396,6 +396,13 @@ ha-ws-client call input_boolean turn_on '{"entity_id": "input_boolean.guest_mode
 ha-ws-client template '{{ states("sensor.temperature") | float | round(1) }}'
 ha-ws-client template '{{ state_attr("climate.thermostat", "current_temperature") }}'
 
+# History / past data (use these — do NOT build REST history URLs with `date`,
+# BusyBox `date` on this Alpine image has no -d/-v flags and will fail)
+ha-ws-client history sensor.temperature       # recent state-change history
+ha-ws-client stats sensor.temperature         # long-term statistics (min/max/mean)
+ha-ws-client logbook                           # recent logbook entries
+# An empty result means the entity simply has no recorded changes in the window.
+
 # Search entity/device/area registry
 ha-ws-client entities humidity --json
 ha-ws-client devices "phone" --json

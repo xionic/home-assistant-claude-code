@@ -266,6 +266,13 @@ ha-ws-client call light turn_on '{"entity_id": "light.living_room", "brightness_
 ha-ws-client template '{{ states("sensor.temperature") }}'
 ha-ws-client entities battery --json          # search the entity registry
 
+# History / past data — use ha-ws-client, NOT REST + `date` (BusyBox `date` has
+# no -d/-v flags, so REST history/period date math fails on this Alpine image):
+ha-ws-client history sensor.temperature       # recent state-change history
+ha-ws-client stats sensor.temperature         # long-term statistics (min/max/mean)
+ha-ws-client logbook                          # recent logbook entries
+# (empty history just means the entity has no recorded changes in the period.)
+
 # ha-lovelace — dashboards (WebSocket; REST /api/lovelace/* returns 404, do NOT use it)
 ha-lovelace list                              # list storage-mode dashboards
 ha-lovelace get my-dashboard > /tmp/d.json    # fetch a dashboard config

@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "2.1.9"
+version: "2.4.2"
 slug: "claude-code-ui"
 description: "Claude Code in your browser with Home Assistant integration and mobile-friendly chat UI."
 url: "https://github.com/xionic/home-assistant-claude-code"

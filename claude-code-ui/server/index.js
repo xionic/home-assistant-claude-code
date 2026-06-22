@@ -1,5 +1,5 @@
 import { createServer } from 'http';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -135,7 +135,7 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
   try {
     for await (const event of query({ prompt, options: opts })) {
       if (event.type === 'system' && event.subtype === 'init') {
-        events.push({ init: { mcp_servers: event.mcp_servers, tools: event.tools, slash_commands: event.slash_commands } });
+        events.push({ init: { model: event.model, mcp_servers: event.mcp_servers, slash_commands: event.slash_commands } });
       } else if (event.type === 'assistant') {
         for (const block of (event.message?.content || [])) {
           if (block.type === 'text' && block.text) events.push({ text: block.text });
@@ -166,29 +166,114 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
   res.json({ prompt, ENABLE_HA_MCP, events });
 });
 
-// Inspect the persisted conversation (transcript length, resume id, file status).
+// Inspect the active session (resume id + parsed transcript length).
 if (DEBUG_MODE) app.get('/diag/conv', (req, res) => {
-  if (req.query.clear) {
-    abortActive();
-    clearConversation();
-    broadcast({ type: 'cleared' });
-  }
-  res.json({
-    file: CONV_FILE,
-    exists: existsSync(CONV_FILE),
-    sessionId: conversation.sessionId,
-    count: conversation.transcript.length,
-    last: conversation.transcript.slice(-8),
-  });
+  if (req.query.clear) { abortActive(); activeSessionId = null; saveActive(); broadcast({ type: 'cleared' }); }
+  const items = parseSession(activeSessionId);
+  res.json({ activeSessionId, count: items.length, last: items.slice(-8), sessionCount: listSessions().length });
 });
 
-// Drive one real turn through the persistence path (no browser needed), so the
-// full record→save→resume loop can be verified, including across a restart.
+// Drive one real turn through the session/resume path (no browser needed).
 if (DEBUG_MODE) app.get('/diag/feed', async (req, res) => {
   const q = (req.query.q || 'Say hello in three words.').toString();
   const dummyWs = { readyState: 3 };  // never open / never in `connections`
   await runQuery(dummyWs, { pendingPermissions: new Map() }, { text: q, permissionMode: 'auto' });
-  res.json({ sessionId: conversation.sessionId, count: conversation.transcript.length, last: conversation.transcript.slice(-6) });
+  const items = parseSession(activeSessionId);
+  res.json({ activeSessionId, count: items.length, last: items.slice(-6) });
+});
+
+// Grep across all stored sessions for a term, returning readable snippets.
+if (DEBUG_MODE) app.get('/diag/grep', (req, res) => {
+  const term = (req.query.q || '').toString().toLowerCase();
+  if (!term) return res.json({ error: 'provide ?q=' });
+  if (!existsSync(STORE_DIR)) return res.json({ term, results: [] });
+  const results = [];
+  for (const f of readdirSync(STORE_DIR)) {
+    if (!f.endsWith('.jsonl')) continue;
+    const id = f.slice(0, -6);
+    let content; try { content = readFileSync(path.join(STORE_DIR, f), 'utf8'); } catch { continue; }
+    if (!content.toLowerCase().includes(term)) continue;
+    const snippets = [];
+    for (const ln of content.split('\n')) {
+      if (!ln.toLowerCase().includes(term)) continue;
+      let obj; try { obj = JSON.parse(ln); } catch { continue; }
+      if (obj.type !== 'user' && obj.type !== 'assistant') continue;
+      const c = obj.message?.content;
+      const text = typeof c === 'string' ? c : Array.isArray(c)
+        ? c.map((b) => b.text || (b.type === 'tool_use' ? JSON.stringify(b.input) : '') ||
+            (b.type === 'tool_result' ? (typeof b.content === 'string' ? b.content : JSON.stringify(b.content)) : '')).join(' ')
+        : '';
+      const lower = text.toLowerCase();
+      let idx = lower.indexOf(term);
+      while (idx !== -1 && snippets.length < 10) {
+        snippets.push({ role: obj.message.role, text: text.slice(Math.max(0, idx - 160), idx + 220).replace(/\s+/g, ' ').trim() });
+        idx = lower.indexOf(term, idx + term.length);
+      }
+    }
+    if (snippets.length) results.push({ id, title: sessionTitle(id), hits: snippets.length, snippets });
+  }
+  results.sort((a, b) => b.hits - a.hits);
+  res.json({ term, sessionsWithHits: results.length, results });
+});
+
+// Test whether a uvx package (e.g. ha-mcp) installs/runs on this image.
+if (DEBUG_MODE) app.get('/diag/uvx', async (req, res) => {
+  const pkg = (req.query.pkg || 'ha-mcp@7.8.1').toString().replace(/[^a-zA-Z0-9.@_-]/g, '');
+  const py = (req.query.py || '').toString().replace(/[^0-9.]/g, '');
+  const pyFlag = py ? `--python ${py} ` : '';
+  const r = await runCmd(`timeout 230 uvx ${pyFlag}${pkg} --help 2>&1 | head -c 2500`, 240000);
+  res.json({ pkg, py, result: r });
+});
+
+// List sessions parsed from the store (for building/verifying multi-session).
+// ?id=<sessionId> dumps that session's parsed transcript; ?find=<substr> filters list.
+if (DEBUG_MODE) app.get('/diag/sesslist', (req, res) => {
+  if (req.query.id) return res.json({ id: req.query.id, items: parseSession(req.query.id.toString()) });
+  let sessions = listSessions();
+  if (req.query.find) sessions = sessions.filter((s) => s.title.toLowerCase().includes(req.query.find.toString().toLowerCase()));
+  res.json({ store: STORE_DIR, active: activeSessionId, sessions });
+});
+
+// Probe Claude Code's on-disk session store (JSONL transcripts) so we can build
+// multi-session browsing on top of the canonical store.
+if (DEBUG_MODE) app.get('/diag/sessions', async (_req, res) => {
+  const home = process.env.HOME || '/data/home';
+  const candidates = [
+    path.join(home, '.claude', 'projects'),
+    path.join(CLAUDE_CONFIG_DIR, 'projects'),
+  ];
+  const out = { candidates: {}, sample: null };
+  const { readdirSync, statSync } = await import('fs');
+  for (const dir of candidates) {
+    if (!existsSync(dir)) { out.candidates[dir] = null; continue; }
+    const projects = {};
+    for (const proj of readdirSync(dir)) {
+      const pdir = path.join(dir, proj);
+      try {
+        const files = readdirSync(pdir).filter((f) => f.endsWith('.jsonl'));
+        projects[proj] = files.map((f) => {
+          const st = statSync(path.join(pdir, f));
+          return { file: f, size: st.size, mtime: st.mtimeMs };
+        });
+      } catch { projects[proj] = '<unreadable>'; }
+    }
+    out.candidates[dir] = projects;
+    // grab a sample: first 3 lines of the newest jsonl in this dir
+    if (!out.sample) {
+      let newest = null;
+      for (const [proj, files] of Object.entries(projects)) {
+        if (!Array.isArray(files)) continue;
+        for (const f of files) {
+          if (!newest || f.mtime > newest.mtime) newest = { ...f, proj };
+        }
+      }
+      if (newest) {
+        const lines = readFileSync(path.join(dir, newest.proj, newest.file), 'utf8').split('\n').slice(0, 4);
+        out.sample = { path: path.join(dir, newest.proj, newest.file), firstLines: lines };
+      }
+    }
+  }
+  res.json(out);
 });
 
 app.get('*', (_req, res) => res.sendFile('/opt/frontend/index.html'));
@@ -299,45 +384,107 @@ function broadcast(msg) {
   for (const ws of connections) send(ws, msg);
 }
 
-// ── Conversation persistence ─────────────────────────────────────────────────
-// One persistent conversation (this is a single-user add-on). The transcript and
-// the SDK resume id are stored on /data so the chat survives browser reconnects
-// and add-on / HA restarts, until the user clears it with "New chat".
-const CONV_FILE = path.join('/data', 'conversation.json');
-let conversation = { sessionId: null, transcript: [] };
+// ── Sessions (Claude Code's on-disk store) ───────────────────────────────────
+// Multi-session is built on Claude Code's canonical JSONL transcript store at
+// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl — the same store the CLI
+// uses, so sessions are interchangeable. We keep only a tiny pointer to the
+// "active" session on /data; transcripts are always read from the store.
+const STORE_DIR = path.join(process.env.HOME || '/data/home', '.claude', 'projects', WORK_DIR.replace(/\//g, '-'));
+const ACTIVE_FILE = path.join('/data', 'active-session.json');
+let activeSessionId = null;
 let activeQuery = null;        // AbortController for the in-flight query (global)
-let convSaveTimer = null;
 
-function loadConversation() {
+function loadActive() {
   try {
-    if (existsSync(CONV_FILE)) {
-      const d = JSON.parse(readFileSync(CONV_FILE, 'utf8'));
-      conversation = {
-        sessionId: d.sessionId || null,
-        transcript: Array.isArray(d.transcript) ? d.transcript : [],
-      };
+    if (existsSync(ACTIVE_FILE)) activeSessionId = JSON.parse(readFileSync(ACTIVE_FILE, 'utf8')).sessionId || null;
+  } catch (e) { console.warn('Could not load active session:', e.message); }
+  // If the pointer references a session that no longer exists, drop it.
+  if (activeSessionId && !existsSync(path.join(STORE_DIR, `${activeSessionId}.jsonl`))) activeSessionId = null;
+}
+
+function saveActive() {
+  try { writeFileSync(ACTIVE_FILE, JSON.stringify({ sessionId: activeSessionId })); }
+  catch (e) { console.warn('Could not save active session:', e.message); }
+}
+
+function blockText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map((b) => (typeof b === 'string' ? b : b.text || '')).join('');
+  return JSON.stringify(content);
+}
+
+// Turn one stored JSONL line into render item(s), matching the live event shapes.
+function lineToItems(line) {
+  const items = [];
+  const msg = line.message;
+  if (line.isMeta || line.isSidechain || line.isCompactSummary || !msg) return items;
+  if (line.type === 'user') {
+    const content = msg.content;
+    if (typeof content === 'string') {
+      if (content.trim()) items.push({ kind: 'user', text: content });
+    } else if (Array.isArray(content)) {
+      for (const b of content) {
+        if (b.type === 'text' && b.text) items.push({ kind: 'user', text: b.text });
+        else if (b.type === 'tool_result') {
+          const raw = blockText(b.content);
+          items.push({ kind: 'tool_result', id: b.tool_use_id, output: raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw, isError: !!b.is_error });
+        }
+      }
     }
-  } catch (e) { console.warn('Could not load conversation:', e.message); }
+  } else if (line.type === 'assistant') {
+    for (const b of (msg.content || [])) {
+      if (b.type === 'text' && b.text) items.push({ kind: 'text', text: b.text });
+      else if (b.type === 'tool_use') items.push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
+    }
+  }
+  return items;
 }
 
-function saveConversation() {
-  if (convSaveTimer) return;
-  convSaveTimer = setTimeout(() => {
-    convSaveTimer = null;
-    try { writeFileSync(CONV_FILE, JSON.stringify(conversation)); }
-    catch (e) { console.warn('Could not save conversation:', e.message); }
-  }, 250);
+function parseSession(id) {
+  const file = path.join(STORE_DIR, `${id}.jsonl`);
+  if (!id || !existsSync(file)) return [];
+  const items = [];
+  for (const ln of readFileSync(file, 'utf8').split('\n')) {
+    if (!ln.trim()) continue;
+    let obj; try { obj = JSON.parse(ln); } catch { continue; }
+    items.push(...lineToItems(obj));
+  }
+  return items;
 }
 
-function record(item) {
-  conversation.transcript.push(item);
-  saveConversation();
+function sessionTitle(id) {
+  const file = path.join(STORE_DIR, `${id}.jsonl`);
+  try {
+    for (const ln of readFileSync(file, 'utf8').split('\n')) {
+      if (!ln.trim()) continue;
+      let obj; try { obj = JSON.parse(ln); } catch { continue; }
+      if (obj.type !== 'user' || obj.isMeta || obj.isSidechain) continue;
+      const c = obj.message?.content;
+      const text = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((b) => b.type === 'text')?.text || '') : '';
+      const t = (text || '').replace(/\s+/g, ' ').trim();
+      if (t) return t.length > 80 ? t.slice(0, 80) + '…' : t;
+    }
+  } catch {}
+  return null;
 }
 
-function clearConversation() {
-  conversation = { sessionId: null, transcript: [] };
-  try { writeFileSync(CONV_FILE, JSON.stringify(conversation)); }
-  catch (e) { console.warn('Could not clear conversation:', e.message); }
+function listSessions() {
+  if (!existsSync(STORE_DIR)) return [];
+  const out = [];
+  for (const f of readdirSync(STORE_DIR)) {
+    if (!f.endsWith('.jsonl')) continue;
+    const id = f.slice(0, -6);
+    let mtime = 0; try { mtime = statSync(path.join(STORE_DIR, f)).mtimeMs; } catch {}
+    const title = sessionTitle(id);
+    if (!title) continue;   // skip empty/junk sessions with no user prompt
+    out.push({ id, title, updatedAt: mtime });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function deleteSession(id) {
+  try { unlinkSync(path.join(STORE_DIR, `${id}.jsonl`)); return true; }
+  catch (e) { console.warn('Could not delete session:', e.message); return false; }
 }
 
 function abortActive() {
@@ -355,8 +502,9 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'connected' });
   send(ws, { type: 'auth_status', authenticated: isAuthenticated() });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
-  // Replay the persisted conversation so the chat is restored on (re)connect
-  send(ws, { type: 'history', items: conversation.transcript, running: !!activeQuery });
+  // Restore the active session's transcript + the session list on (re)connect
+  send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
+  send(ws, { type: 'history', items: parseSession(activeSessionId), running: !!activeQuery });
 
   ws.on('message', (raw) => {
     let msg;
@@ -378,8 +526,22 @@ wss.on('connection', (ws) => {
       abortActive();
     } else if (msg.type === 'new_session') {
       abortActive();
-      clearConversation();
+      activeSessionId = null;
+      saveActive();
       broadcast({ type: 'cleared' });
+      broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
+    } else if (msg.type === 'sessions_list') {
+      send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
+    } else if (msg.type === 'session_switch') {
+      abortActive();
+      activeSessionId = msg.id || null;
+      saveActive();
+      broadcast({ type: 'history', items: parseSession(activeSessionId), running: false });
+      broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
+    } else if (msg.type === 'session_delete') {
+      deleteSession(msg.id);
+      if (msg.id === activeSessionId) { activeSessionId = null; saveActive(); broadcast({ type: 'cleared' }); }
+      broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
     } else if (msg.type === 'permission_response') {
       const resolve = state.pendingPermissions.get(msg.id);
       if (resolve) {
@@ -405,8 +567,8 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
   const abortController = new AbortController();
   activeQuery = abortController;
 
-  // Record + show the user's message (sender already rendered it locally).
-  record({ kind: 'user', text });
+  // Show the user's message on other clients (sender rendered it locally; the
+  // SDK persists it to the session store, so nothing to record ourselves).
   for (const c of connections) if (c !== ws) send(c, { type: 'user', text });
 
   const opts = {
@@ -467,19 +629,20 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
       });
   }
 
-  const resuming = !!conversation.sessionId;
+  const resuming = !!activeSessionId;
   if (resuming) {
-    opts.resume = conversation.sessionId;
+    opts.resume = activeSessionId;
   }
 
   try {
-    // Events are broadcast to every connected client and recorded to the
-    // persistent transcript — independent of whether the requester is still here.
+    // Events are broadcast to every connected client. Persistence is handled by
+    // the SDK writing to the session store — independent of the requester.
     for await (const event of query({ prompt: text, options: opts })) {
       if (event.type === 'system' && event.subtype === 'init') {
-        conversation.sessionId = event.session_id;
-        saveConversation();
+        activeSessionId = event.session_id;
+        saveActive();
         broadcast({ type: 'session', id: event.session_id });
+        if (event.model) broadcast({ type: 'model', model: event.model });
         if (Array.isArray(event.slash_commands)) {
           cachedSlashCommands = event.slash_commands;
           broadcast({ type: 'slash_commands', commands: cachedSlashCommands });
@@ -489,10 +652,8 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
         for (const block of (event.message?.content || [])) {
           if (block.type === 'text' && block.text) {
             broadcast({ type: 'text', text: block.text });
-            record({ kind: 'text', text: block.text });
           } else if (block.type === 'tool_use') {
             broadcast({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
-            record({ kind: 'tool_use', id: block.id, name: block.name, input: block.input });
           }
         }
 
@@ -508,36 +669,34 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
                   : JSON.stringify(block.content);
               const output = raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw;
               broadcast({ type: 'tool_result', id: block.tool_use_id, output, isError: block.is_error });
-              record({ kind: 'tool_result', id: block.tool_use_id, output, isError: !!block.is_error });
             }
           }
         }
 
       } else if (event.type === 'result') {
-        const item = {
-          kind: 'result',
+        broadcast({
+          type: 'result',
           success: event.subtype === 'success',
           cost: event.total_cost_usd,
           turns: event.num_turns,
-        };
-        broadcast({ type: 'result', ...item });
-        record(item);
+        });
       }
     }
   } catch (err) {
     if (!abortController.signal.aborted) {
       const message = String(err?.message || err);
       // A stale resume id (e.g. after the SDK session expired) — drop it so the
-      // next prompt starts a fresh session; the visual transcript is kept.
-      if (resuming) { conversation.sessionId = null; saveConversation(); }
+      // next prompt starts a fresh session.
+      if (resuming) { activeSessionId = null; saveActive(); }
       broadcast({ type: 'error', message });
-      record({ kind: 'error', message });
     }
   } finally {
     if (activeQuery === abortController) activeQuery = null;
     if (abortController.signal.aborted) {
       broadcast({ type: 'aborted' });
     }
+    // Refresh the session list so the new/updated session (and its title) appears
+    broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
   }
 }
 
@@ -548,7 +707,7 @@ function send(ws, data) {
 }
 
 sanitizeMcpState();
-loadConversation();
+loadActive();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Claude Code UI listening on port ${PORT}`);
