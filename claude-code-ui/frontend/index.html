@@ -10,11 +10,19 @@
   <div id="app">
     <header class="header">
       <div class="header-left">
-        <span class="title">Claude Code UI</span>
+        <span class="brand-logo" title="Claude Code" aria-label="Claude Code">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <g fill="#d97757">
+              <rect x="11" y="2" width="2" height="20" rx="1"/>
+              <rect x="2" y="11" width="20" height="2" rx="1"/>
+              <rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(45 12 12)"/>
+              <rect x="11" y="2" width="2" height="20" rx="1" transform="rotate(-45 12 12)"/>
+            </g>
+          </svg>
+        </span>
         <span id="status-dot" class="status-dot"></span>
       </div>
       <div class="header-right">
-        <label class="ctl-label" for="perm-mode">Mode</label>
         <select id="perm-mode" class="perm-mode-select" title="Permission mode">
           <option value="ask">Ask</option>
           <option value="auto">Auto</option>
@@ -108,6 +116,17 @@
         <div class="perm-buttons">
           <button id="perm-deny" class="btn btn-deny">Deny</button>
           <button id="perm-allow" class="btn btn-allow">Allow</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="dialog-overlay" class="permission-overlay hidden">
+      <div class="permission-card dialog-card">
+        <h3 id="dialog-title" class="perm-title">Question</h3>
+        <div id="dialog-body" class="dialog-body"></div>
+        <div class="perm-buttons">
+          <button id="dialog-cancel" class="btn btn-deny">Cancel</button>
+          <button id="dialog-submit" class="btn btn-allow">Submit</button>
         </div>
       </div>
     </div>

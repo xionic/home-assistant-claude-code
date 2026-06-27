@@ -58,9 +58,8 @@ body {
 .header-left  { display: flex; align-items: center; gap: 8px; }
 .header-right { display: flex; align-items: center; gap: 8px; }
 
-.ctl-label { font-size: 11px; color: var(--text-muted); letter-spacing: 0.02em; }
-
-.title { font-size: 15px; font-weight: 600; }
+.brand-logo { display: flex; align-items: center; line-height: 0; }
+.brand-logo svg { display: block; }
 
 .status-dot {
   width: 7px; height: 7px;
@@ -387,6 +386,38 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 }
 .tool-call-result.result-error { color: var(--error-text); }
 
+/* ── Tool group (collapses a run of consecutive tool calls) ── */
+.tool-group {
+  align-self: flex-start;
+  width: 100%;
+  display: flex; flex-direction: column; gap: 6px;
+  flex-shrink: 0;
+}
+.tool-group-body { display: flex; flex-direction: column; gap: 6px; }
+.tool-group.collapsed .tool-group-body { display: none; }
+
+.tool-group-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 11px;
+  border: 1px solid var(--tool-border);
+  background: var(--tool-bg);
+  border-radius: var(--radius-sm);
+  cursor: pointer; user-select: none;
+  transition: background 0.1s;
+}
+.tool-group-header.hidden { display: none; }
+.tool-group-header:hover { background: rgba(255,255,255,.04); }
+.tool-group-icon { font-size: 11px; opacity: .5; flex-shrink: 0; }
+.tool-group-count {
+  flex: 1; font-size: 11px; font-weight: 700;
+  color: #7ba3d4; text-transform: uppercase; letter-spacing: 0.07em;
+}
+.tool-group-chevron {
+  flex-shrink: 0; font-size: 10px; color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.tool-group:not(.collapsed) .tool-group-chevron { transform: rotate(180deg); }
+
 /* Fallback for orphan results */
 .tool-result {
   background: var(--surface-2);
@@ -408,6 +439,15 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
   border-radius: 20px;
   background: var(--surface-2);
   flex-shrink: 0;
+}
+
+/* Context compaction divider */
+.compacted-divider {
+  align-self: center;
+  font-size: 11px; color: var(--text-muted);
+  padding: 3px 12px; border-radius: 20px;
+  background: var(--surface-2); border: 1px dashed var(--border);
+  flex-shrink: 0; margin: 4px 0;
 }
 
 /* Working / thinking indicator */
@@ -499,6 +539,28 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 .btn-deny {
   background: var(--surface-2); color: var(--text-muted); border-color: var(--border);
 }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── User dialog (AskUserQuestion) ── */
+.dialog-card { max-width: 540px; }
+.dialog-body { display: flex; flex-direction: column; gap: 18px; margin: 14px 0 18px; }
+.dialog-q { display: flex; flex-direction: column; gap: 8px; }
+.dialog-q-header {
+  font-size: 10px; font-weight: 700; color: #7ba3d4;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.dialog-q-text { font-size: 14px; font-weight: 500; }
+.dialog-option {
+  text-align: left; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); padding: 9px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+  color: inherit; font: inherit; transition: border-color 0.15s, background 0.15s;
+}
+.dialog-option:hover { border-color: var(--accent); }
+.dialog-option.selected { border-color: var(--accent); background: var(--tool-bg); }
+.dialog-option-label { font-size: 14px; font-weight: 500; }
+.dialog-option-desc { font-size: 12px; color: var(--text-muted); }
 
 /* ── Input form ── */
 .input-form {
@@ -681,9 +743,26 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 }
 
 /* ── Mobile ── */
-@media (max-width: 520px) {
-  .messages  { padding: 10px 10px 6px; }
-  .bubble    { max-width: 94%; }
-  .tool-use,
-  .tool-result { width: 100%; }
+@media (max-width: 600px) {
+  .header { padding: 10px 12px; gap: 8px; }
+  .header-right { gap: 4px; }
+  /* Keep the mode selector readable but compact; let buttons stay tappable */
+  .perm-mode-select { font-size: 12px; padding: 4px 6px; padding-right: 20px; }
+  .icon-btn { padding: 6px; }
+
+  /* Panels must never spill past the viewport */
+  .settings-panel,
+  .sessions-panel { top: 48px; right: 10px; max-width: calc(100vw - 20px); }
+
+  .messages { padding: 12px 10px 6px; }
+  .bubble   { max-width: 90%; }
+
+  .input-form { padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); gap: 8px; }
+  .cmd-menu   { left: 10px; right: 10px; }
+}
+
+/* Very narrow phones — reclaim more width for content */
+@media (max-width: 380px) {
+  .bubble { max-width: 95%; }
+  .send-btn { width: 38px; height: 38px; }
 }

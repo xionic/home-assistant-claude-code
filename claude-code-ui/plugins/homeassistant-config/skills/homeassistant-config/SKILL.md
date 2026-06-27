@@ -344,12 +344,29 @@ actions:
 ## Live HA Access Tools
 
 **IMPORTANT — tool selection rules:**
-- Use **ha-ws-client** for entity states, service calls, template rendering, registry search, traces, history.
+- Use **ha-ws-client** for entity states, service calls, template rendering, registry search, traces, and recent history.
+- Use **ha-history** / **ha-stats** when you need history or long-term statistics over a specific date range (`--days N`, `--from`, `--to`).
 - Use **ha-lovelace** for dashboard config (list / get / save). Lovelace lives only on the WebSocket API — the REST endpoints `/api/lovelace/config` and `/api/lovelace/dashboards` return **404** and must not be used.
 - For **YAML-mode dashboards**, edit the dashboard `.yaml` files directly in `/config`.
 - Never ask the user for a long-lived access token — `$SUPERVISOR_TOKEN` is available automatically and is sufficient for everything above.
 
 All tools authenticate automatically using `$SUPERVISOR_TOKEN` — no additional setup required.
+
+### ⚠️ Never edit `.storage` or the database directly
+
+**Always ask the user before touching anything under `/config/.storage/` or the
+recorder database (`home-assistant_v2.db`).** These hold HA's internal state:
+they only load on a full restart (not a reload), bypass HA's validation, and are
+trivially corrupted (a piped write that mixes log text into the JSON breaks
+them). Prefer service calls, `ha-ws-client`, and YAML edits, which apply via a
+reload:
+
+- Set a helper value with its **service**, not a `.storage` edit:
+  - `ha-ws-client call input_number set_value '{"entity_id":"input_number.x","value":42}'`
+  - `ha-ws-client call input_text set_value '{"entity_id":"input_text.note","value":"hi"}'`
+- **Template sensors are read-only and reset to `unknown` on reload** — they
+  recompute from other entities, so a "seed then revert" never persists. For a
+  user-set persistent value, use an `input_number` / `input_text` helper instead.
 
 ### Editing dashboards (ha-lovelace)
 
@@ -391,6 +408,8 @@ ha-ws-client states-filter "light.*"
 ha-ws-client call light turn_on '{"entity_id": "light.living_room", "brightness_pct": 80}'
 ha-ws-client call climate set_temperature '{"entity_id": "climate.thermostat", "temperature": 21}'
 ha-ws-client call input_boolean turn_on '{"entity_id": "input_boolean.guest_mode"}'
+ha-ws-client call input_number set_value '{"entity_id": "input_number.target", "value": 42}'
+ha-ws-client call input_text set_value '{"entity_id": "input_text.note", "value": "hello"}'
 
 # Render a Jinja2 template
 ha-ws-client template '{{ states("sensor.temperature") | float | round(1) }}'
@@ -398,10 +417,18 @@ ha-ws-client template '{{ state_attr("climate.thermostat", "current_temperature"
 
 # History / past data (use these — do NOT build REST history URLs with `date`,
 # BusyBox `date` on this Alpine image has no -d/-v flags and will fail)
-ha-ws-client history sensor.temperature       # recent state-change history
-ha-ws-client stats sensor.temperature         # long-term statistics (min/max/mean)
+ha-ws-client history sensor.temperature       # recent fixed-window state history
+ha-ws-client stats sensor.temperature         # recent fixed-window statistics
 ha-ws-client logbook                           # recent logbook entries
 # An empty result means the entity simply has no recorded changes in the window.
+
+# For a specific DATE RANGE, use these helpers (they compute the range in Node):
+ha-history sensor.temperature --days 7                       # last 7 days
+ha-history sensor.temperature --from 2026-06-01 --to 2026-06-08 --full
+ha-stats sensor.energy_cost --days 14                        # last 14 days, hourly
+ha-stats sensor.energy_cost --from 2026-06-01 --period day   # daily buckets
+#   ha-history flags: --days N | --from <ISO|YYYY-MM-DD> | --to <ISO> | --full
+#   ha-stats   flags: --days N | --from | --to | --period 5minute|hour|day|week|month
 
 # Search entity/device/area registry
 ha-ws-client entities humidity --json

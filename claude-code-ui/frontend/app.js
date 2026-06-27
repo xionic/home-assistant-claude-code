@@ -41,6 +41,11 @@ const permToolChip   = document.getElementById('perm-tool-chip');
 const permInputEl    = document.getElementById('perm-input');
 const permAllow      = document.getElementById('perm-allow');
 const permDeny       = document.getElementById('perm-deny');
+const dialogOverlay  = document.getElementById('dialog-overlay');
+const dialogTitle    = document.getElementById('dialog-title');
+const dialogBody     = document.getElementById('dialog-body');
+const dialogSubmit   = document.getElementById('dialog-submit');
+const dialogCancel   = document.getElementById('dialog-cancel');
 
 const cmdMenu = document.getElementById('cmd-menu');
 
@@ -48,6 +53,8 @@ const cmdMenu = document.getElementById('cmd-menu');
 const toolCallEls = new Map();
 let lastAssistantBubble = null;
 let thinkingEl = null;
+// The wrapper collecting a run of consecutive tool calls (null between runs)
+let currentToolGroup = null;
 
 // Session usage totals (for /usage), accumulated from result events
 let usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -127,6 +134,14 @@ function handleServerMessage(msg) {
     case 'connected': break;
     case 'session':   break;
 
+    case 'config':
+      // Server-provided default permission mode for new chats. The user's own
+      // saved choice (localStorage) always wins.
+      if (!localStorage.getItem('permMode') && msg.defaultPermMode) {
+        permModeSelect.value = msg.defaultPermMode;
+      }
+      break;
+
     case 'auth_status':
       setAuthenticated(msg.authenticated);
       break;
@@ -197,6 +212,15 @@ function handleServerMessage(msg) {
       showPermissionPrompt(msg);
       break;
 
+    case 'permission_resolved':
+      // The server auto-approved this pending prompt (the user switched the mode
+      // to Bypass/Accept edits mid-run) — just dismiss the card.
+      if (pendingPermId === msg.id) {
+        pendingPermId = null;
+        permOverlay.classList.add('hidden');
+      }
+      break;
+
     case 'result':
       hideThinking();
       lastAssistantBubble = null;
@@ -207,10 +231,27 @@ function handleServerMessage(msg) {
       usage.outputTokens += msg.outputTokens || 0;
       usage.cacheReadTokens  += msg.cacheReadTokens  || 0;
       usage.cacheWriteTokens += msg.cacheWriteTokens || 0;
-      lastCtxTokens = (msg.inputTokens || 0) + (msg.outputTokens || 0);
-      updateCtxHint();
       isRunning = false;
       updateSendBtn();
+      break;
+
+    case 'context_usage':
+      ctxUsage = {
+        totalTokens: msg.totalTokens || 0,
+        maxTokens: msg.maxTokens || 0,
+        autoCompactThreshold: msg.autoCompactThreshold || 0,
+        autoCompactEnabled: !!msg.autoCompactEnabled,
+      };
+      updateCtxHint();
+      break;
+
+    case 'compacted':
+      appendCompactedDivider(msg);
+      break;
+
+    case 'user_dialog':
+      hideThinking();
+      showUserDialog(msg);
       break;
 
     case 'error':
@@ -224,6 +265,7 @@ function handleServerMessage(msg) {
     case 'aborted':
       hideThinking();
       lastAssistantBubble = null;
+      endToolGroup();
       isRunning = false;
       updateSendBtn();
       break;
@@ -234,6 +276,7 @@ function handleServerMessage(msg) {
 
 function appendUserBubble(text) {
   lastAssistantBubble = null;
+  endToolGroup();
   const div = mkBubble('user');
   div.querySelector('.bubble-content').textContent = text;
   messagesEl.appendChild(div);
@@ -246,6 +289,7 @@ function renderMarkdown(el, raw) {
 
 function appendAssistantText(text) {
   if (!lastAssistantBubble) {
+    endToolGroup();
     lastAssistantBubble = mkBubble('assistant');
     messagesEl.appendChild(lastAssistantBubble);
   }
@@ -297,10 +341,49 @@ function appendToolUse(id, name, input) {
   el.append(header, body);
   header.onclick = () => el.classList.toggle('expanded');
 
-  messagesEl.appendChild(el);
+  const group = ensureToolGroup();
+  group._count++;
+  group.querySelector('.tool-group-body').appendChild(el);
+  group.querySelector('.tool-group-count').textContent =
+    `${group._count} tool call${group._count !== 1 ? 's' : ''}`;
+  if (group._count >= 2) group.querySelector('.tool-group-header').classList.remove('hidden');
+
   scrollBottom();
 
   toolCallEls.set(id, el);
+}
+
+// A run of consecutive tool calls shares one collapsible group. The group is
+// created lazily on the first call and finalised (collapsed when it holds 2+
+// calls) by endToolGroup() as soon as anything else interrupts the run.
+function ensureToolGroup() {
+  if (currentToolGroup) return currentToolGroup;
+  const group = document.createElement('div');
+  group.className = 'tool-group';
+  group._count = 0;
+
+  const gh = document.createElement('div');
+  gh.className = 'tool-group-header hidden';
+  gh.innerHTML =
+    '<span class="tool-group-icon">⚙</span>' +
+    '<span class="tool-group-count"></span>' +
+    '<span class="tool-group-chevron">▾</span>';
+  gh.onclick = () => group.classList.toggle('collapsed');
+
+  const body = document.createElement('div');
+  body.className = 'tool-group-body';
+
+  group.append(gh, body);
+  messagesEl.appendChild(group);
+  currentToolGroup = group;
+  return group;
+}
+
+function endToolGroup() {
+  if (!currentToolGroup) return;
+  // Collapse finished multi-call groups to declutter the transcript.
+  if ((currentToolGroup._count || 0) >= 2) currentToolGroup.classList.add('collapsed');
+  currentToolGroup = null;
 }
 
 function appendToolResult(id, output, isError) {
@@ -341,6 +424,7 @@ function getInputSummary(input) {
 }
 
 function appendResultLine({ success, turns }) {
+  endToolGroup();
   const div = document.createElement('div');
   div.className = 'result-line';
   const parts = [success ? 'Done' : 'Finished with errors'];
@@ -350,7 +434,20 @@ function appendResultLine({ success, turns }) {
   scrollBottom();
 }
 
+function appendCompactedDivider({ trigger, preTokens, postTokens }) {
+  endToolGroup();
+  lastAssistantBubble = null;
+  const div = document.createElement('div');
+  div.className = 'compacted-divider';
+  let label = trigger === 'auto' ? 'Context auto-compacted' : 'Context compacted';
+  if (preTokens && postTokens) label += ` — ${fmtTokens(preTokens)} → ${fmtTokens(postTokens)} tokens`;
+  div.textContent = '⟳ ' + label;
+  messagesEl.appendChild(div);
+  scrollBottom();
+}
+
 function appendErrorBubble(message) {
+  endToolGroup();
   const div = document.createElement('div');
   div.className = 'error-bubble';
   div.textContent = message;
@@ -360,6 +457,7 @@ function appendErrorBubble(message) {
 
 function appendInfoBubble(text) {
   lastAssistantBubble = null;
+  endToolGroup();
   const div = mkBubble('assistant');
   const content = div.querySelector('.bubble-content');
   content._rawMd = text;
@@ -389,6 +487,7 @@ function renderHistory(items) {
     }
   }
   lastAssistantBubble = null;
+  endToolGroup();   // finalise (and collapse) any trailing tool-call group
 }
 
 // ── Working indicator ────────────────────────────────────────────────────────
@@ -412,21 +511,29 @@ const MODEL_LABELS = {
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
 };
-const MODEL_CTX = {
-  'claude-opus-4-8': 1_000_000,
-  'claude-sonnet-4-6': 1_000_000,
-  'claude-haiku-4-5-20251001': 200_000,
-};
-
-let lastCtxTokens = 0;
+// Real, cache-inclusive context-window usage reported by the SDK
+// (query.getContextUsage), pushed after every turn. Drives the hint above the
+// input showing progress toward auto-compaction.
+let ctxUsage = null;   // { totalTokens, maxTokens, autoCompactThreshold, autoCompactEnabled }
 const ctxTokensEl = document.getElementById('ctx-tokens');
 
+function fmtTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
 function updateCtxHint() {
-  if (!lastCtxTokens) { ctxTokensEl.classList.add('hidden'); return; }
-  const ctxWindow = MODEL_CTX[modelSelect.value] || 200_000;
-  const pct = (lastCtxTokens / ctxWindow * 100).toFixed(1);
-  const kStr = ctxWindow >= 1_000_000 ? `${ctxWindow / 1_000_000}M` : `${ctxWindow / 1_000}K`;
-  ctxTokensEl.textContent = `~${lastCtxTokens.toLocaleString()} ctx tokens (${pct}% of ${kStr})`;
+  if (!ctxUsage || !ctxUsage.totalTokens) { ctxTokensEl.classList.add('hidden'); return; }
+  const { totalTokens, maxTokens, autoCompactThreshold, autoCompactEnabled } = ctxUsage;
+  const compact = autoCompactEnabled && autoCompactThreshold;
+  const limit = compact ? autoCompactThreshold : maxTokens;
+  let text = `${fmtTokens(totalTokens)} tokens`;
+  if (limit) {
+    const pct = Math.min(100, Math.round(totalTokens / limit * 100));
+    text += compact ? ` · ${pct}% to auto-compact` : ` · ${pct}% of ${fmtTokens(maxTokens)}`;
+  }
+  ctxTokensEl.textContent = text;
   ctxTokensEl.classList.remove('hidden');
 }
 function ensureModelOption(id) {
@@ -556,6 +663,115 @@ permDeny.onclick  = () => resolvePermission('deny');
 // Close on backdrop click
 permOverlay.onclick = (e) => { if (e.target === permOverlay) resolvePermission('deny'); };
 
+// ── User dialog (AskUserQuestion) ──────────────────────────────────────────
+// The SDK surfaces interactive tools via onUserDialog. AskUserQuestion ships a
+// `questions` array; we render an option picker and send the answers back.
+let pendingDialogId = null;
+let dialogQuestions = [];
+let dialogSelections = [];   // per question: Set of chosen option labels
+
+function showUserDialog({ id, payload }) {
+  const questions = Array.isArray(payload?.questions) ? payload.questions
+    : (payload && Array.isArray(payload.options)) ? [payload] : [];
+  // Unrecognised dialog shapes must be cancelled per the SDK contract.
+  if (!questions.length) { ws.send(JSON.stringify({ type: 'user_dialog_response', id })); return; }
+
+  pendingDialogId = id;
+  dialogQuestions = questions;
+  dialogSelections = questions.map(() => new Set());
+  dialogTitle.textContent = questions.length > 1 ? 'A few questions' : (questions[0].header || 'Question');
+  dialogBody.innerHTML = '';
+
+  questions.forEach((q, qi) => {
+    const block = document.createElement('div');
+    block.className = 'dialog-q';
+    if (q.header && questions.length > 1) {
+      const h = document.createElement('div');
+      h.className = 'dialog-q-header';
+      h.textContent = q.header;
+      block.appendChild(h);
+    }
+    const qt = document.createElement('div');
+    qt.className = 'dialog-q-text';
+    qt.textContent = q.question || '';
+    block.appendChild(qt);
+
+    (q.options || []).forEach((opt) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dialog-option';
+      const label = document.createElement('div');
+      label.className = 'dialog-option-label';
+      label.textContent = opt.label || '';
+      btn.appendChild(label);
+      if (opt.description) {
+        const desc = document.createElement('div');
+        desc.className = 'dialog-option-desc';
+        desc.textContent = opt.description;
+        btn.appendChild(desc);
+      }
+      btn.onclick = () => {
+        const sel = dialogSelections[qi];
+        if (q.multiSelect) {
+          if (sel.has(opt.label)) sel.delete(opt.label); else sel.add(opt.label);
+        } else {
+          sel.clear(); sel.add(opt.label);
+        }
+        block.querySelectorAll('.dialog-option').forEach((b) => {
+          b.classList.remove('selected');
+          if (sel.has(b.querySelector('.dialog-option-label').textContent)) b.classList.add('selected');
+        });
+        updateDialogSubmit();
+        // Single question, single-select → submit immediately for a fast path.
+        if (!q.multiSelect && questions.length === 1) resolveUserDialog();
+      };
+      block.appendChild(btn);
+    });
+    dialogBody.appendChild(block);
+  });
+
+  updateDialogSubmit();
+  dialogOverlay.classList.remove('hidden');
+}
+
+function updateDialogSubmit() {
+  dialogSubmit.disabled = !dialogSelections.every((s) => s.size > 0);
+}
+
+function resolveUserDialog() {
+  if (!pendingDialogId) return;
+  // Result shape mirrors the AskUserQuestion answer contract: one entry per
+  // question with the chosen option label(s). Verify against a logged request
+  // (server logs `[onUserDialog]`) if the agent rejects the answer.
+  const answers = dialogQuestions.map((q, qi) => {
+    const chosen = [...dialogSelections[qi]];
+    return {
+      header: q.header,
+      question: q.question,
+      answer: q.multiSelect ? chosen : (chosen[0] ?? null),
+    };
+  });
+  ws.send(JSON.stringify({ type: 'user_dialog_response', id: pendingDialogId, result: { answers } }));
+  closeUserDialog();
+}
+
+function cancelUserDialog() {
+  if (!pendingDialogId) return;
+  ws.send(JSON.stringify({ type: 'user_dialog_response', id: pendingDialogId }));  // no result → cancelled
+  closeUserDialog();
+}
+
+function closeUserDialog() {
+  pendingDialogId = null;
+  dialogQuestions = [];
+  dialogSelections = [];
+  dialogOverlay.classList.add('hidden');
+}
+
+dialogSubmit.onclick = () => resolveUserDialog();
+dialogCancel.onclick = () => cancelUserDialog();
+dialogOverlay.onclick = (e) => { if (e.target === dialogOverlay) cancelUserDialog(); };
+
 // ── Input form ─────────────────────────────────────────────────────────────
 
 sendBtn.onclick = (e) => {
@@ -674,6 +890,8 @@ function setCurrentHit() {
   const m = findHits[findIndex];
   if (!m) return;
   m.classList.add('find-current');
+  const tg = m.closest('.tool-group');
+  if (tg) tg.classList.remove('collapsed');
   const tc = m.closest('.tool-call');
   if (tc && !tc.classList.contains('expanded')) tc.classList.add('expanded');
   m.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -807,9 +1025,10 @@ function clearScreen() {
   messagesEl.innerHTML = '';
   toolCallEls.clear();
   lastAssistantBubble = null;
+  currentToolGroup = null;
   thinkingEl = null;
   usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-  lastCtxTokens = 0;
+  ctxUsage = null;
   updateCtxHint();
 }
 
@@ -844,11 +1063,19 @@ document.addEventListener('click', (e) => {
   const storedModel = localStorage.getItem('model');
   if (storedModel) { ensureModelOption(storedModel); modelSelect.value = storedModel; }
 }
-modelSelect.onchange = () => { localStorage.setItem('model', modelSelect.value); updateCtxHint(); };
+modelSelect.onchange = () => { localStorage.setItem('model', modelSelect.value); };
 
-// Restore + persist the permission mode so it survives navigating away
+// Restore + persist the permission mode so it survives navigating away. The
+// add-on's default_permission_mode (sent as a 'config' message) fills in when
+// the user hasn't chosen one yet.
 permModeSelect.value = localStorage.getItem('permMode') || 'ask';
-permModeSelect.onchange = () => localStorage.setItem('permMode', permModeSelect.value);
+permModeSelect.onchange = () => {
+  localStorage.setItem('permMode', permModeSelect.value);
+  // Apply the change to an in-progress run immediately, not just the next prompt.
+  if (isRunning && ws && isConnected) {
+    ws.send(JSON.stringify({ type: 'set_perm_mode', mode: permModeSelect.value }));
+  }
+};
 
 settingsBtn.onclick = (e) => {
   e.stopPropagation();

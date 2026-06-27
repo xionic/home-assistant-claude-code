@@ -11,11 +11,16 @@ import { randomUUID } from 'crypto';
 const PORT = parseInt(process.env.SERVER_PORT || '7681', 10);
 const WORK_DIR = process.env.WORK_DIR || '/config';
 const PLUGIN_DIR = process.env.PLUGIN_DIR || '/opt/plugins/homeassistant-config';
-const ENABLE_HA_MCP = process.env.ENABLE_HA_MCP === 'true';
-const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN;
-const HA_TOKEN = process.env.HA_TOKEN || null;
 const CLAUDE_CONFIG_DIR = process.env.ANTHROPIC_CONFIG_DIR || '/data/.config/claude';
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
+const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
+
+// Tools auto-approved in 'acceptEdits' mode (file edits only).
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+
+// The permission mode for the in-flight run. Updated live by `set_perm_mode`
+// messages so the user can change how tools are approved mid-prompt.
+let activePermMode = DEFAULT_PERMISSION_MODE;
 
 const app = express();
 const server = createServer(app);
@@ -49,14 +54,10 @@ async function runCmd(cmd, timeoutMs = 15000) {
 
 if (DEBUG_MODE) app.get('/diag', async (_req, res) => {
   const tok = process.env.SUPERVISOR_TOKEN || '';
-  const haTok = process.env.HA_TOKEN || '';
   const out = {
     env: {
-      ENABLE_HA_MCP: process.env.ENABLE_HA_MCP,
       has_SUPERVISOR_TOKEN: !!tok,
       supervisor_token_len: tok.length,
-      has_HA_TOKEN: !!haTok,
-      ha_token_len: haTok.length,
       WORK_DIR: process.env.WORK_DIR,
     },
     tests: {},
@@ -102,7 +103,7 @@ if (DEBUG_MODE) app.get('/diag/config', (_req, res) => {
     try { files[p] = readFileSync(p, 'utf8').slice(0, 4000); }
     catch (e) { files[p] = `<read error: ${e.message}>`; }
   }
-  res.json({ HOME: home, CLAUDE_CONFIG_DIR, WORK_DIR, ENABLE_HA_MCP, files });
+  res.json({ HOME: home, CLAUDE_CONFIG_DIR, WORK_DIR, files });
 });
 
 // Run a real headless agent query and stream back what happens — emulates a
@@ -121,16 +122,6 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
     // Auto-approve every tool (bypassPermissions is refused when running as root).
     canUseTool: (_t, input) => Promise.resolve({ behavior: 'allow', updatedInput: input }),
   };
-  // Mirror the exact MCP gating used by real prompts.
-  if (ENABLE_HA_MCP && SUPERVISOR_TOKEN) {
-    opts.mcpServers = {
-      'home-assistant': {
-        command: 'uvx',
-        args: ['--index-strategy', 'unsafe-best-match', 'ha-mcp@3.5.1'],
-        env: { HOMEASSISTANT_URL: 'http://supervisor/core', HOMEASSISTANT_TOKEN: HA_TOKEN || SUPERVISOR_TOKEN },
-      },
-    };
-  }
 
   try {
     for await (const event of query({ prompt, options: opts })) {
@@ -163,7 +154,7 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
   } finally {
     clearTimeout(timer);
   }
-  res.json({ prompt, ENABLE_HA_MCP, events });
+  res.json({ prompt, events });
 });
 
 // Inspect the active session (resume id + parsed transcript length).
@@ -282,8 +273,8 @@ app.get('*', (_req, res) => res.sendFile('/opt/frontend/index.html'));
 // The Claude Code CLI persists MCP servers into ~/.claude.json (globally and
 // per-project). An earlier build that ran with ha-mcp enabled wrote a
 // `home-assistant` server under projects["/config"], and the SDK auto-loads it
-// on every run regardless of our ENABLE_HA_MCP flag. We are the sole source of
-// MCP truth (via opts.mcpServers), so strip any persisted definitions at start.
+// on every run. ha-mcp has since been removed entirely (we use ha-ws-client /
+// ha-lovelace instead), so strip any persisted MCP definitions at start.
 function sanitizeMcpState() {
   const file = path.join(process.env.HOME || '/data/home', '.claude.json');
   if (!existsSync(file)) return;
@@ -496,10 +487,13 @@ wss.on('connection', (ws) => {
 
   const state = {
     pendingPermissions: new Map(),
+    pendingDialogs: new Map(),
   };
+  ws._state = state;   // exposed so set_perm_mode can resolve prompts across tabs
 
   // Greet and immediately report auth status + any known slash commands
   send(ws, { type: 'connected' });
+  send(ws, { type: 'config', defaultPermMode: DEFAULT_PERMISSION_MODE });
   send(ws, { type: 'auth_status', authenticated: isAuthenticated() });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
   // Restore the active session's transcript + the session list on (re)connect
@@ -543,10 +537,40 @@ wss.on('connection', (ws) => {
       if (msg.id === activeSessionId) { activeSessionId = null; saveActive(); broadcast({ type: 'cleared' }); }
       broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
     } else if (msg.type === 'permission_response') {
-      const resolve = state.pendingPermissions.get(msg.id);
-      if (resolve) {
+      const entry = state.pendingPermissions.get(msg.id);
+      if (entry) {
         state.pendingPermissions.delete(msg.id);
-        resolve(msg.decision === 'allow');
+        entry.resolve(msg.decision === 'allow');
+      }
+    } else if (msg.type === 'user_dialog_response') {
+      // Reply to an onUserDialog request (e.g. AskUserQuestion). `result` is the
+      // SDK-defined answer shape; its absence means the user dismissed the dialog.
+      const resolve = state.pendingDialogs.get(msg.id);
+      if (resolve) {
+        state.pendingDialogs.delete(msg.id);
+        resolve(msg.result === undefined
+          ? { behavior: 'cancelled' }
+          : { behavior: 'completed', result: msg.result });
+      }
+    } else if (msg.type === 'set_perm_mode') {
+      // Change how tools are approved mid-prompt. Takes effect immediately for
+      // ask/acceptEdits/bypass runs (which route through canUseTool). A run
+      // started in 'auto' keeps the SDK classifier for its duration.
+      activePermMode = msg.mode;
+      if (msg.mode === 'bypass' || msg.mode === 'acceptEdits') {
+        // Auto-resolve any outstanding prompts the new mode would now allow,
+        // across every connected tab, so the user isn't left waiting.
+        for (const conn of connections) {
+          const pending = conn._state?.pendingPermissions;
+          if (!pending) continue;
+          for (const [id, entry] of pending) {
+            if (msg.mode === 'bypass' || EDIT_TOOLS.has(entry.toolName)) {
+              pending.delete(id);
+              entry.resolve(true);
+              send(conn, { type: 'permission_resolved', id });
+            }
+          }
+        }
       }
     }
   });
@@ -556,8 +580,10 @@ wss.on('connection', (ws) => {
     // Do NOT abort the active query — it keeps running and persisting so the
     // chat is complete when the user navigates back. Just clear any pending
     // permission prompts tied to this (now gone) client so the run doesn't hang.
-    for (const resolve of state.pendingPermissions.values()) resolve(false);
+    for (const entry of state.pendingPermissions.values()) entry.resolve(false);
     state.pendingPermissions.clear();
+    for (const resolve of state.pendingDialogs.values()) resolve({ behavior: 'cancelled' });
+    state.pendingDialogs.clear();
   });
 });
 
@@ -579,35 +605,23 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
 
   if (model) opts.model = model;
 
-  if (ENABLE_HA_MCP && SUPERVISOR_TOKEN) {
-    const mcpEnv = {
-      HOMEASSISTANT_URL: 'http://supervisor/core',
-      HOMEASSISTANT_TOKEN: HA_TOKEN || SUPERVISOR_TOKEN,
-    };
-    opts.mcpServers = {
-      'home-assistant': {
-        command: 'uvx',
-        args: ['--index-strategy', 'unsafe-best-match', 'ha-mcp@3.5.1'],
-        env: mcpEnv,
-      },
-    };
-  }
+  // Set the live mode for this run. 'auto' uses the SDK's native classifier and
+  // is fixed for the run; ask/acceptEdits/bypass route through canUseTool, which
+  // reads `activePermMode` at call time so the user can switch modes mid-prompt.
+  activePermMode = permissionMode || DEFAULT_PERMISSION_MODE;
 
-  if (permissionMode === 'bypass') {
-    // 'bypassPermissions' is refused by the CLI when running as root (it exits 1),
-    // so emulate it by auto-approving every tool via the permission callback.
-    opts.canUseTool = (_toolName, input) =>
-      Promise.resolve({ behavior: 'allow', updatedInput: input });
-  } else if (permissionMode === 'acceptEdits') {
-    opts.permissionMode = 'acceptEdits';
-  } else if (permissionMode === 'auto') {
-    // 'auto' — a model classifier approves/denies each tool automatically.
-    // No canUseTool callback: the classifier handles decisions without prompting.
+  if (activePermMode === 'auto') {
+    // A model classifier approves/denies each tool — no prompts, no canUseTool.
     opts.permissionMode = 'auto';
   } else {
-    // 'ask' — prompt the user for every tool use
-    opts.canUseTool = (toolName, input, options) =>
-      new Promise((resolve) => {
+    opts.canUseTool = (toolName, input, options) => {
+      const mode = activePermMode;
+      // Auto-allow without prompting when the current mode permits it.
+      if (mode === 'bypass' || (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName))) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+      // Otherwise ('ask', or a non-edit tool under acceptEdits): prompt the user.
+      return new Promise((resolve) => {
         const id = randomUUID();
         send(ws, {
           type: 'permission_request',
@@ -617,27 +631,65 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
           title: options.title,
           description: options.description,
         });
-        state.pendingPermissions.set(id, (allowed) => {
-          resolve(allowed
-            ? { behavior: 'allow', updatedInput: input }
-            : { behavior: 'deny', message: 'Denied by user' });
-        });
+        const finish = (allowed) => resolve(allowed
+          ? { behavior: 'allow', updatedInput: input }
+          : { behavior: 'deny', message: 'Denied by user' });
+        state.pendingPermissions.set(id, { toolName, resolve: finish });
         options.signal.addEventListener('abort', () => {
           state.pendingPermissions.delete(id);
           resolve({ behavior: 'deny', message: 'Aborted' });
         }, { once: true });
       });
+    };
   }
+
+  // Interactive tools (AskUserQuestion) reach the host via onUserDialog rather
+  // than canUseTool. Render them in the browser and feed the answer back. Web
+  // hosts want HTML option previews instead of the CLI's monospace markdown.
+  opts.toolConfig = { askUserQuestion: { previewFormat: 'html' } };
+  opts.onUserDialog = (request, { signal }) => new Promise((resolve) => {
+    // The payload/result shapes are SDK-defined and transported opaquely; log
+    // them so the exact AskUserQuestion contract can be confirmed in the field.
+    console.log('[onUserDialog]', request.dialogKind, JSON.stringify(request.payload));
+    const id = randomUUID();
+    send(ws, {
+      type: 'user_dialog',
+      id,
+      dialogKind: request.dialogKind,
+      payload: request.payload,
+      toolUseID: request.toolUseID,
+    });
+    state.pendingDialogs.set(id, resolve);
+    signal.addEventListener('abort', () => {
+      if (state.pendingDialogs.delete(id)) resolve({ behavior: 'cancelled' });
+    }, { once: true });
+  });
 
   const resuming = !!activeSessionId;
   if (resuming) {
     opts.resume = activeSessionId;
   }
 
+  // Ask the SDK for the real, cache-inclusive context-window usage and push it
+  // to every client so the indicator reflects progress toward auto-compaction.
+  const reportContextUsage = async (q) => {
+    try {
+      const u = await q.getContextUsage();
+      broadcast({
+        type: 'context_usage',
+        totalTokens: u.totalTokens,
+        maxTokens: u.maxTokens,
+        autoCompactThreshold: u.autoCompactThreshold,
+        autoCompactEnabled: u.isAutoCompactEnabled,
+      });
+    } catch { /* control request can fail if the session just ended — ignore */ }
+  };
+
   try {
     // Events are broadcast to every connected client. Persistence is handled by
     // the SDK writing to the session store — independent of the requester.
-    for await (const event of query({ prompt: text, options: opts })) {
+    const q = query({ prompt: text, options: opts });
+    for await (const event of q) {
       if (event.type === 'system' && event.subtype === 'init') {
         activeSessionId = event.session_id;
         saveActive();
@@ -647,6 +699,11 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
           cachedSlashCommands = event.slash_commands;
           broadcast({ type: 'slash_commands', commands: cachedSlashCommands });
         }
+
+      } else if (event.type === 'system' && event.subtype === 'compact_boundary') {
+        const m = event.compact_metadata || {};
+        broadcast({ type: 'compacted', trigger: m.trigger, preTokens: m.pre_tokens, postTokens: m.post_tokens });
+        await reportContextUsage(q);
 
       } else if (event.type === 'assistant') {
         for (const block of (event.message?.content || [])) {
@@ -684,6 +741,7 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
           cacheReadTokens: event.usage?.cache_read_input_tokens ?? 0,
           cacheWriteTokens: event.usage?.cache_creation_input_tokens ?? 0,
         });
+        await reportContextUsage(q);
       }
     }
   } catch (err) {

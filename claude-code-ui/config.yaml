@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "1.0.4"
+version: "1.1.0"
 slug: "claude-code-ui"
 description: "Claude Code in your browser with Home Assistant integration and mobile-friendly chat UI."
 url: "https://github.com/xionic/home-assistant-claude-code"
@@ -19,21 +19,11 @@ map:
   - config:rw
 options:
   anthropic_api_key: ""
-  ha_token: ""
+  default_permission_mode: ask
   ha_smart_context: true
-  enable_ha_mcp: false
-  bypass_permissions: false
   debug: false
-  persistent_apk_packages: []
-  persistent_pip_packages: []
 schema:
-  anthropic_api_key: str
-  ha_token: str
+  anthropic_api_key: str?
+  default_permission_mode: "list(ask|auto|acceptEdits|bypass)"
   ha_smart_context: bool
-  enable_ha_mcp: bool
-  bypass_permissions: bool
   debug: bool
-  persistent_apk_packages:
-    - str
-  persistent_pip_packages:
-    - str

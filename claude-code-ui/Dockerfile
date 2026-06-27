@@ -56,7 +56,7 @@ WORKDIR /config
 
 # Copy application files
 # (bump SCRIPTS_VER to force Docker layer re-copy on next build)
-ARG SCRIPTS_VER=5
+ARG SCRIPTS_VER=7
 COPY server/index.js /opt/server/index.js
 COPY frontend/ /opt/frontend/
 COPY plugins/ /opt/plugins/
@@ -67,11 +67,13 @@ RUN chmod +x /run.sh \
     && chmod +x /opt/scripts/*.sh \
     && chmod +x /opt/plugins/homeassistant-config/hooks/*.sh
 
-# ha-lovelace: WebSocket Lovelace CLI. Wrapper sets NODE_PATH so the bundled
-# `ws` module (from the server deps) resolves.
-RUN printf '#!/bin/bash\nexec env NODE_PATH=/opt/server/node_modules node /opt/scripts/ha-lovelace.cjs "$@"\n' \
-       > /usr/local/bin/ha-lovelace \
-    && chmod +x /usr/local/bin/ha-lovelace
+# ha-lovelace / ha-stats / ha-history: Node WebSocket CLIs. Each wrapper sets
+# NODE_PATH so the bundled `ws` module (from the server deps) resolves.
+RUN for tool in ha-lovelace ha-stats ha-history; do \
+        printf '#!/bin/bash\nexec env NODE_PATH=/opt/server/node_modules node /opt/scripts/%s.cjs "$@"\n' "$tool" \
+            > "/usr/local/bin/$tool" \
+        && chmod +x "/usr/local/bin/$tool"; \
+    done
 
 # Bypass s6-overlay — HA Supervisor runs containers with --init (tini as PID 1),
 # which prevents s6-overlay-suexec from running as PID 1.

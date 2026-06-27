@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# HA Smart Context — generates a CLAUDE.md with Home Assistant context
-# Written to ~/.claude/CLAUDE.md (user memory) so Claude Code auto-loads it for
-# every session regardless of the working directory.
+# HA Smart Context — generates Home Assistant context memory
+# Written to ~/.claude/ha-context.md and @-imported by ~/.claude/CLAUDE.md (which
+# run.sh seeds once), so Claude Code auto-loads it for every session regardless
+# of the working directory while the user's own CLAUDE.md edits are never
+# clobbered on restart.
 #
 # Adapted from heytcass/home-assistant-addons (MIT)
 # https://github.com/heytcass/home-assistant-addons
@@ -13,7 +15,7 @@
 #   ha-context --help   Show usage
 
 SUPERVISOR_URL="http://supervisor"
-OUTPUT_FILE="${HOME}/.claude/CLAUDE.md"
+OUTPUT_FILE="${HOME}/.claude/ha-context.md"
 FULL_MODE=false
 
 # Parse arguments
@@ -252,6 +254,21 @@ DIVIDER
 
     cat >> "$tmp_file" << 'APIREF'
 
+## ⚠️ Safety — never touch `.storage` or the database directly
+
+**Always ask the user before editing anything under `/config/.storage/` or the
+recorder database (`home-assistant_v2.db`).** Those files are HA's internal
+state: they only load on a full restart (not a reload), bypass HA's validation,
+and a stray byte corrupts them. Prefer service calls, `ha-ws-client`, and YAML
+edits — all of which apply cleanly via a reload.
+
+- To set a helper's value, **call its service** — don't edit `.storage`:
+  `ha-ws-client call input_number set_value '{"entity_id":"input_number.x","value":42}'`
+  `ha-ws-client call input_text set_value '{"entity_id":"input_text.note","value":"hi"}'`
+- **Template sensors are read-only** — they recompute from other entities and
+  reset to `unknown` on every reload, so you can't "seed and revert" a value into
+  one. For a persistent user-set value use an `input_number` / `input_text` helper.
+
 ## Live Home Assistant Access — USE THESE TOOLS
 
 There is **no Home Assistant MCP server**. Interact with HA using these
@@ -266,12 +283,18 @@ ha-ws-client call light turn_on '{"entity_id": "light.living_room", "brightness_
 ha-ws-client template '{{ states("sensor.temperature") }}'
 ha-ws-client entities battery --json          # search the entity registry
 
-# History / past data — use ha-ws-client, NOT REST + `date` (BusyBox `date` has
-# no -d/-v flags, so REST history/period date math fails on this Alpine image):
+# History / statistics over a DATE RANGE — use these helpers (they compute the
+# range in Node; REST + BusyBox `date` can't, and ha-ws-client has no date args):
+ha-history sensor.temperature --days 7        # state-change history, last 7 days
+ha-history sensor.temperature --from 2026-06-01 --to 2026-06-08 --full
+ha-stats sensor.energy_cost --days 14         # long-term stats, last 14 days (hourly)
+ha-stats sensor.energy_cost --from 2026-06-01 --period day
+# (empty result just means no recorded data in that window.)
+
+# ha-ws-client also has fixed-window helpers for quick checks:
 ha-ws-client history sensor.temperature       # recent state-change history
-ha-ws-client stats sensor.temperature         # long-term statistics (min/max/mean)
+ha-ws-client stats sensor.temperature         # recent long-term statistics
 ha-ws-client logbook                          # recent logbook entries
-# (empty history just means the entity has no recorded changes in the period.)
 
 # ha-lovelace — dashboards (WebSocket; REST /api/lovelace/* returns 404, do NOT use it)
 ha-lovelace list                              # list storage-mode dashboards

@@ -72,46 +72,6 @@ migrate_legacy_auth_files() {
 }
 
 # ---------------------------------------------------------------------------
-# Persistent packages
-# Adapted from heytcass/home-assistant-addons (MIT)
-# ---------------------------------------------------------------------------
-install_persistent_packages() {
-    local apk_packages=""
-    local pip_packages=""
-
-    if bashio::config.has_value 'persistent_apk_packages'; then
-        local raw
-        raw=$(bashio::config 'persistent_apk_packages')
-        [ -n "$raw" ] && [ "$raw" != "null" ] && apk_packages="$raw"
-    fi
-
-    if bashio::config.has_value 'persistent_pip_packages'; then
-        local raw
-        raw=$(bashio::config 'persistent_pip_packages')
-        [ -n "$raw" ] && [ "$raw" != "null" ] && pip_packages="$raw"
-    fi
-
-    apk_packages=$(echo "$apk_packages" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
-    pip_packages=$(echo "$pip_packages" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
-
-    if [ -n "$apk_packages" ]; then
-        bashio::log.info "Installing APK packages: $apk_packages"
-        # shellcheck disable=SC2086
-        apk add --no-cache $apk_packages || bashio::log.warning "Some APK packages failed"
-    fi
-
-    if [ -n "$pip_packages" ]; then
-        bashio::log.info "Installing pip packages: $pip_packages"
-        # shellcheck disable=SC2086
-        pip3 install --break-system-packages --no-cache-dir $pip_packages \
-            || bashio::log.warning "Some pip packages failed"
-    fi
-
-    [ -z "$apk_packages" ] && [ -z "$pip_packages" ] && \
-        bashio::log.info "No persistent packages configured"
-}
-
-# ---------------------------------------------------------------------------
 # HA Smart Context — writes CLAUDE.md with HA system info for every session
 # Adapted from heytcass/home-assistant-addons (MIT)
 # ---------------------------------------------------------------------------
@@ -129,12 +89,27 @@ generate_ha_context() {
         if /opt/scripts/ha-context.sh 2>&1 | while IFS= read -r line; do
             bashio::log.info "  $line"
         done; then
-            bashio::log.info "HA context written to $HOME/.claude/CLAUDE.md"
+            bashio::log.info "HA context written to $HOME/.claude/ha-context.md"
         else
             bashio::log.warning "HA context generation had issues — continuing"
         fi
     else
         bashio::log.warning "ha-context.sh not found, skipping"
+    fi
+
+    # Seed a user-editable CLAUDE.md once. It @-imports the regenerated HA context
+    # but is never overwritten afterwards, so the user's own instructions persist
+    # across restarts/updates (everything under /data is persistent).
+    local claude_md="$HOME/.claude/CLAUDE.md"
+    if [ ! -f "$claude_md" ]; then
+        cat > "$claude_md" << 'CLAUDEMD'
+@ha-context.md
+
+<!-- Your own persistent instructions for Claude go below. This file is created
+     once and never overwritten by the add-on, so your edits are safe. The line
+     above imports the auto-generated Home Assistant context. -->
+CLAUDEMD
+        bashio::log.info "Seeded user-editable CLAUDE.md at $claude_md"
     fi
 }
 
@@ -145,8 +120,6 @@ generate_ha_context() {
 # ---------------------------------------------------------------------------
 start_server() {
     local port=7681
-    local bypass_permissions
-    bypass_permissions=$(bashio::config 'bypass_permissions' 'false')
 
     bashio::log.info "Starting Claude Code UI server on port ${port}..."
 
@@ -158,19 +131,10 @@ start_server() {
         bashio::log.info "Anthropic API key loaded from add-on config"
     fi
 
-    # Export optional HA long-lived access token for MCP WebSocket tools
-    local ha_token
-    ha_token=$(bashio::config 'ha_token' '')
-    if [ -n "$ha_token" ] && [ "$ha_token" != "null" ]; then
-        export HA_TOKEN="$ha_token"
-        bashio::log.info "HA long-lived token configured — ha-mcp WebSocket tools enabled"
-    fi
-
     export SERVER_PORT="${port}"
     export WORK_DIR="/config"
     export PLUGIN_DIR="/opt/plugins/homeassistant-config"
-    export ENABLE_HA_MCP=$(bashio::config 'enable_ha_mcp' 'true')
-    export DEFAULT_BYPASS_PERMISSIONS="${bypass_permissions}"
+    export DEFAULT_PERMISSION_MODE=$(bashio::config 'default_permission_mode' 'ask')
     export DEBUG_MODE=$(bashio::config 'debug' 'false')
 
     if [ "$DEBUG_MODE" = "true" ]; then
@@ -188,7 +152,6 @@ main() {
     bashio::log.info "Starting Claude Code UI add-on..."
 
     init_environment
-    install_persistent_packages
     generate_ha_context
     start_server
 }

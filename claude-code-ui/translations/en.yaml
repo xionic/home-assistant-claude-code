@@ -1,0 +1,24 @@
+configuration:
+  anthropic_api_key:
+    name: Anthropic API key
+    description: >-
+      Optional. If set, the assistant authenticates with this API key instead of
+      the interactive browser login. Leave blank to log in from the chat UI.
+  default_permission_mode:
+    name: Default permission mode
+    description: >-
+      Tool-permission mode applied to new chats — Ask (prompt for each tool),
+      Auto (a model decides), Accept edits (auto-approve file edits only), or
+      Bypass (auto-approve everything). You can still change it per-chat in the app.
+  ha_smart_context:
+    name: Home Assistant smart context
+    description: >-
+      Generate a context file each session (system info, an entity-count summary,
+      installed add-ons, recent errors, and the HA tool reference) so the
+      assistant understands your setup. Recommended on.
+  debug:
+    name: Debug mode (dangerous)
+    description: >-
+      DANGEROUS — exposes unauthenticated /diag endpoints on the add-on network,
+      including one that runs arbitrary assistant prompts with tools auto-approved
+      (remote prompt injection). Enable only for local debugging, then turn it off.
