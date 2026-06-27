@@ -121,6 +121,13 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
     plugins: [{ type: 'local', path: PLUGIN_DIR }],
     // Auto-approve every tool (bypassPermissions is refused when running as root).
     canUseTool: (_t, input) => Promise.resolve({ behavior: 'allow', updatedInput: input }),
+    // Required: tells the subprocess to use request_user_dialog for AskUserQuestion.
+    toolConfig: { askUserQuestion: { previewFormat: 'html' } },
+    // Capture onUserDialog payload so diag/query reveals the exact structure.
+    onUserDialog: (request) => {
+      events.push({ user_dialog: { dialogKind: request.dialogKind, payload: request.payload, toolUseID: request.toolUseID } });
+      return Promise.resolve({ behavior: 'cancelled' });
+    },
   };
 
   try {
@@ -168,7 +175,7 @@ if (DEBUG_MODE) app.get('/diag/conv', (req, res) => {
 if (DEBUG_MODE) app.get('/diag/feed', async (req, res) => {
   const q = (req.query.q || 'Say hello in three words.').toString();
   const dummyWs = { readyState: 3 };  // never open / never in `connections`
-  await runQuery(dummyWs, { pendingPermissions: new Map() }, { text: q, permissionMode: 'auto' });
+  await runQuery(dummyWs, { pendingPermissions: new Map(), pendingDialogs: new Map() }, { text: q, permissionMode: 'auto' });
   const items = parseSession(activeSessionId);
   res.json({ activeSessionId, count: items.length, last: items.slice(-6) });
 });
@@ -643,10 +650,10 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
     };
   }
 
-  // Interactive tools (AskUserQuestion) reach the host via onUserDialog rather
-  // than canUseTool. Render them in the browser and feed the answer back. Web
-  // hosts want HTML option previews instead of the CLI's monospace markdown.
-  opts.toolConfig = { askUserQuestion: { previewFormat: 'html' } };
+  // AskUserQuestion is disabled so Claude falls back to plain-text questions
+  // rather than using a structured tool that the subprocess handles silently.
+  // onUserDialog is still wired up in case a future SDK version routes it here.
+  opts.disallowedTools = ['AskUserQuestion'];
   opts.onUserDialog = (request, { signal }) => new Promise((resolve) => {
     // The payload/result shapes are SDK-defined and transported opaquely; log
     // them so the exact AskUserQuestion contract can be confirmed in the field.
