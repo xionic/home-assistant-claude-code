@@ -141,6 +141,12 @@ start_server() {
         bashio::log.info "Debug mode enabled — /diag endpoint active"
     fi
 
+    if [ "$ALLOW_ADDON_CONFIGS" = "true" ]; then
+        bashio::log.info "Other add-on config access enabled — /addon_configs is available"
+    else
+        bashio::log.info "Other add-on config access disabled — /addon_configs is blocked"
+    fi
+
     cd /config
     exec node /opt/server/index.js
 }
@@ -150,6 +156,13 @@ start_server() {
 # ---------------------------------------------------------------------------
 main() {
     bashio::log.info "Starting Claude Code UI add-on..."
+
+    # Whether the assistant may access other add-ons' config folders
+    # (/addon_configs). Read once and exported so both the context generator and
+    # the server agree. The mount itself is always present (HA folder maps are
+    # static); this flag gates access at the tool-call layer in the server.
+    export ALLOW_ADDON_CONFIGS
+    ALLOW_ADDON_CONFIGS=$(bashio::config 'allow_addon_configs' 'false')
 
     init_environment
     generate_ha_context

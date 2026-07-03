@@ -15,8 +15,45 @@ const CLAUDE_CONFIG_DIR = process.env.ANTHROPIC_CONFIG_DIR || '/data/.config/cla
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
 
+// Whether the agent may touch other add-ons' config folders. HA always mounts
+// `all_addon_configs` at /addon_configs (folder maps are static), so this flag
+// — set from the `allow_addon_configs` add-on option — is what actually gates
+// access, enforced by the PreToolUse hook below.
+const ALLOW_ADDON_CONFIGS = process.env.ALLOW_ADDON_CONFIGS === 'true';
+const ADDON_CONFIGS_PATH = '/addon_configs';
+
 // Tools auto-approved in 'acceptEdits' mode (file edits only).
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+
+// ── /addon_configs access guard ───────────────────────────────────────────────
+// When the `allow_addon_configs` option is off, block every tool call that
+// references the /addon_configs mount. A PreToolUse hook is used (rather than
+// canUseTool) because it runs in *all* permission modes — including 'auto',
+// which has no canUseTool — and its 'deny' decision short-circuits the tool
+// before it executes, taking precedence over canUseTool. Matching the absolute
+// path in the serialized tool input catches Read/Edit/Write (file_path),
+// Glob/Grep (path) and Bash (command) uniformly; nothing under /addon_configs is
+// reachable from the /config cwd without naming that absolute path.
+function addonConfigsDenyHook(input) {
+  const blob = JSON.stringify(input?.tool_input ?? '');
+  if (!blob.includes(ADDON_CONFIGS_PATH)) return { continue: true };
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason:
+        'Access to /addon_configs (other add-ons’ configuration) is disabled. ' +
+        'Turn on "Allow access to other add-on configs" in the add-on Configuration tab to enable it.',
+    },
+  };
+}
+
+// Only register the hook when access is disabled — when enabled there is no
+// guard to run, so we avoid a per-tool-call round-trip to the subprocess.
+const ADDON_CONFIGS_HOOKS = ALLOW_ADDON_CONFIGS
+  ? undefined
+  : { PreToolUse: [{ hooks: [async (input) => addonConfigsDenyHook(input)] }] };
 
 // The permission mode for the in-flight run. Updated live by `set_perm_mode`
 // messages so the user can change how tools are approved mid-prompt.
@@ -129,6 +166,9 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
       return Promise.resolve({ behavior: 'cancelled' });
     },
   };
+
+  // Mirror the live guard: block /addon_configs unless the option enables it.
+  if (ADDON_CONFIGS_HOOKS) opts.hooks = ADDON_CONFIGS_HOOKS;
 
   try {
     for await (const event of query({ prompt, options: opts })) {
@@ -610,6 +650,9 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
     plugins: [{ type: 'local', path: PLUGIN_DIR }],
   };
 
+  // Block /addon_configs access unless the add-on option enables it.
+  if (ADDON_CONFIGS_HOOKS) opts.hooks = ADDON_CONFIGS_HOOKS;
+
   if (model) opts.model = model;
 
   // Set the live mode for this run. 'auto' uses the SDK's native classifier and
@@ -782,4 +825,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Claude Code UI listening on port ${PORT}`);
   console.log(`  Working dir: ${WORK_DIR}`);
   console.log(`  Plugin dir:  ${PLUGIN_DIR}`);
+  console.log(`  /addon_configs access: ${ALLOW_ADDON_CONFIGS ? 'enabled' : 'blocked'}`);
 });

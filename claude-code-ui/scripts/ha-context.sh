@@ -309,6 +309,24 @@ For YAML-mode dashboards (not listed by `ha-lovelace list`), edit the YAML files
 in `/config` directly. See the `homeassistant-config` skill for YAML patterns.
 APIREF
 
+    # Other add-ons' config folders — only advertised when the option enables it.
+    # While disabled, /addon_configs is blocked at the tool layer, so we don't
+    # mention it (Claude would only hit a denial).
+    if [ "${ALLOW_ADDON_CONFIGS:-false}" = "true" ]; then
+        cat >> "$tmp_file" << 'ADDONCFG'
+
+## Other Add-ons' Configuration — `/addon_configs`
+
+Access to other add-ons' config folders is **enabled**. Each add-on's config is
+mounted at `/addon_configs/<repo>_<slug>/` — e.g. `/addon_configs/local_myaddon/`
+or `/addon_configs/a0d7b954_zwavejs/` (`local_` for locally-installed add-ons, a
+short hash for store add-ons). Read and edit these to help configure other
+add-ons. Treat them as carefully as `/config`: they often hold secrets, and the
+owning add-on usually needs a restart to pick up changes — confirm with the user
+before editing.
+ADDONCFG
+    fi
+
     chmod 644 "$tmp_file"
     mv "$tmp_file" "$OUTPUT_FILE"
 }

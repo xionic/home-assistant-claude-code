@@ -1,3 +1,6 @@
+## 1.2.0
+- New **Allow access to other add-on configs** option (off by default): when enabled, Claude can read and edit other add-ons' config folders under `/addon_configs`; while disabled, any tool call touching that path is blocked at the tool layer (enforced in every permission mode, including Auto)
+
 ## 1.1.0
 - AskUserQuestion no longer fails with a red X: the tool is disabled at the SDK level so Claude asks questions in conversational text instead
 - Context indicator now shows real, cache-inclusive usage and **% toward auto-compaction** (from `query.getContextUsage()`) rather than an undercounted input+output figure

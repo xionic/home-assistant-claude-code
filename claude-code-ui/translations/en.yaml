@@ -16,6 +16,13 @@ configuration:
       Generate a context file each session (system info, an entity-count summary,
       installed add-ons, recent errors, and the HA tool reference) so the
       assistant understands your setup. Recommended on.
+  allow_addon_configs:
+    name: Allow access to other add-on configs
+    description: >-
+      Let the assistant read and edit the configuration folders of your other
+      add-ons (mounted at /addon_configs). Off by default; while off, any tool
+      call touching /addon_configs is blocked. Turn on only if you want help
+      configuring other add-ons — their configs may contain secrets.
   debug:
     name: Debug mode (dangerous)
     description: >-
