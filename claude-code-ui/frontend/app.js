@@ -841,6 +841,7 @@ inputForm.onsubmit = (e) => {
   if (isRunning) return;
 
   appendUserBubble(text);
+  scrollBottom(true);   // sending a prompt re-pins to the bottom
   promptInput.value = '';
   localStorage.removeItem('draft');
   resizeTextarea();
@@ -1065,6 +1066,7 @@ function clearScreen() {
   lastAssistantBubble = null;
   currentToolGroup = null;
   thinkingEl = null;
+  stickToBottom = true;   // a fresh/switched view starts pinned to the bottom
   usage = { messages: 0, turns: 0, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   ctxUsage = null;
   updateCtxHint();
@@ -1182,8 +1184,22 @@ function setStatus(state) {
   statusDot.className = `status-dot ${state}`;
 }
 
-function scrollBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+// Auto-scroll only when the user is already pinned to the bottom. If they've
+// scrolled up to read or copy something, incoming responses must NOT yank them
+// back down. `stickToBottom` tracks whether the viewport is at (or near) the
+// bottom; it's updated on every user scroll and re-armed when the user sends a
+// prompt or the screen is reset. Pass force=true to re-pin explicitly.
+let stickToBottom = true;
+const SCROLL_STICK_PX = 80;   // within this many px of the bottom counts as "at bottom"
+
+messagesEl.addEventListener('scroll', () => {
+  const dist = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+  stickToBottom = dist <= SCROLL_STICK_PX;
+});
+
+function scrollBottom(force) {
+  if (force) stickToBottom = true;
+  if (stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 // ── Start ──────────────────────────────────────────────────────────────────

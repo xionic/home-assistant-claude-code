@@ -1,3 +1,6 @@
+## 1.3.1
+- Chat no longer auto-scrolls to the bottom when you've scrolled up to read or copy something — incoming responses only pull the view down if you're already at the bottom (sending a prompt re-pins you there)
+
 ## 1.3.0
 - **Plan mode** added to the permission dropdown — Claude researches read-only and proposes a plan before making changes; you approve the plan to proceed
 - **Reasoning effort** selector in Settings (Low → Max) so you can trade speed for depth per chat
