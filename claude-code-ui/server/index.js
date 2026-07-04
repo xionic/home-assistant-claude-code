@@ -22,8 +22,25 @@ const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
 const ALLOW_ADDON_CONFIGS = process.env.ALLOW_ADDON_CONFIGS === 'true';
 const ADDON_CONFIGS_PATH = '/addon_configs';
 
+// Extra per-event logging to the add-on log (from the `verbose_logging` option).
+const VERBOSE_LOGGING = process.env.VERBOSE_LOGGING === 'true';
+
 // Tools auto-approved in 'acceptEdits' mode (file edits only).
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+
+// Valid reasoning-effort levels the UI can request (SDK `effort` option).
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+// ── Logging ───────────────────────────────────────────────────────────────────
+// Everything here lands in the add-on log (Supervisor → add-on → Log). We keep
+// milestone logs at INFO always, and gate the noisy per-event stream behind the
+// `verbose_logging` option so day-to-day logs stay readable.
+function log(level, msg) {
+  console.log(`[${new Date().toISOString()}] ${level} ${msg}`);
+}
+function vlog(msg) {
+  if (VERBOSE_LOGGING) log('DEBUG', msg);
+}
 
 // ── /addon_configs access guard ───────────────────────────────────────────────
 // When the `allow_addon_configs` option is off, block every tool call that
@@ -451,28 +468,40 @@ function blockText(content) {
   return JSON.stringify(content);
 }
 
+// Slash commands (e.g. /compact) are recorded in the transcript as user
+// messages wrapped in <command-name>…/<local-command-stdout>… tags. They're
+// plumbing, not conversation, so we drop them from the rendered history.
+function isCommandEcho(text) {
+  return typeof text === 'string' &&
+    (text.includes('<command-name>') || text.includes('<local-command-stdout>'));
+}
+
 // Turn one stored JSONL line into render item(s), matching the live event shapes.
+// Each item carries `ts` (epoch ms, from the stored ISO timestamp) so the UI can
+// show when the message happened after a reload.
 function lineToItems(line) {
   const items = [];
   const msg = line.message;
   if (line.isMeta || line.isSidechain || line.isCompactSummary || !msg) return items;
+  const ts = line.timestamp ? Date.parse(line.timestamp) || undefined : undefined;
+  const push = (o) => items.push(ts ? { ...o, ts } : o);
   if (line.type === 'user') {
     const content = msg.content;
     if (typeof content === 'string') {
-      if (content.trim()) items.push({ kind: 'user', text: content });
+      if (content.trim() && !isCommandEcho(content)) push({ kind: 'user', text: content });
     } else if (Array.isArray(content)) {
       for (const b of content) {
-        if (b.type === 'text' && b.text) items.push({ kind: 'user', text: b.text });
+        if (b.type === 'text' && b.text) { if (!isCommandEcho(b.text)) push({ kind: 'user', text: b.text }); }
         else if (b.type === 'tool_result') {
           const raw = blockText(b.content);
-          items.push({ kind: 'tool_result', id: b.tool_use_id, output: raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw, isError: !!b.is_error });
+          push({ kind: 'tool_result', id: b.tool_use_id, output: raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw, isError: !!b.is_error });
         }
       }
     }
   } else if (line.type === 'assistant') {
     for (const b of (msg.content || [])) {
-      if (b.type === 'text' && b.text) items.push({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') items.push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
+      if (b.type === 'text' && b.text) push({ kind: 'text', text: b.text });
+      else if (b.type === 'tool_use') push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
     }
   }
   return items;
@@ -634,11 +663,12 @@ wss.on('connection', (ws) => {
   });
 });
 
-async function runQuery(ws, state, { text, permissionMode, model }) {
+async function runQuery(ws, state, { text, permissionMode, model, effort }) {
   abortActive();
 
   const abortController = new AbortController();
   activeQuery = abortController;
+  const startedAt = Date.now();
 
   // Show the user's message on other clients (sender rendered it locally; the
   // SDK persists it to the session store, so nothing to record ourselves).
@@ -655,22 +685,35 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
 
   if (model) opts.model = model;
 
+  // Reasoning effort (SDK `effort`). Only override when the UI asked for a
+  // specific level; otherwise the SDK uses the model default (high).
+  if (effort && EFFORT_LEVELS.has(effort)) opts.effort = effort;
+
   // Set the live mode for this run. 'auto' uses the SDK's native classifier and
   // is fixed for the run; ask/acceptEdits/bypass route through canUseTool, which
   // reads `activePermMode` at call time so the user can switch modes mid-prompt.
+  // 'plan' is SDK-native (read-only, produces a plan) but still routes through
+  // canUseTool so the ExitPlanMode approval surfaces as a normal prompt.
   activePermMode = permissionMode || DEFAULT_PERMISSION_MODE;
 
   if (activePermMode === 'auto') {
     // A model classifier approves/denies each tool — no prompts, no canUseTool.
     opts.permissionMode = 'auto';
   } else {
+    if (activePermMode === 'plan') opts.permissionMode = 'plan';
     opts.canUseTool = (toolName, input, options) => {
       const mode = activePermMode;
       // Auto-allow without prompting when the current mode permits it.
       if (mode === 'bypass' || (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName))) {
         return Promise.resolve({ behavior: 'allow', updatedInput: input });
       }
-      // Otherwise ('ask', or a non-edit tool under acceptEdits): prompt the user.
+      // Plan mode: the SDK restricts the model to read-only tools, so auto-allow
+      // those silently and only prompt when it proposes leaving plan mode.
+      if (mode === 'plan' && toolName !== 'ExitPlanMode') {
+        return Promise.resolve({ behavior: 'allow', updatedInput: input });
+      }
+      // Otherwise ('ask', non-edit tool under acceptEdits, or ExitPlanMode under
+      // plan): prompt the user.
       return new Promise((resolve) => {
         const id = randomUUID();
         send(ws, {
@@ -732,14 +775,40 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
         autoCompactThreshold: u.autoCompactThreshold,
         autoCompactEnabled: u.isAutoCompactEnabled,
       });
-    } catch { /* control request can fail if the session just ended — ignore */ }
+      // Log where the context window sits, and warn loudly as it approaches the
+      // auto-compact threshold — the point past which chats can appear to stall.
+      const limit = (u.isAutoCompactEnabled && u.autoCompactThreshold) || u.maxTokens;
+      const pct = limit ? Math.round((u.totalTokens / limit) * 100) : 0;
+      const detail = `context ${u.totalTokens}/${limit} tokens (${pct}%)` +
+        ` maxTokens=${u.maxTokens} autoCompact=${u.isAutoCompactEnabled ? 'on' : 'off'}` +
+        ` threshold=${u.autoCompactThreshold || 'n/a'}`;
+      if (pct >= 90) log('WARN', `${detail} — near auto-compact; a turn may pause while it compacts`);
+      else vlog(detail);
+    } catch (e) { vlog(`getContextUsage failed: ${e?.message || e}`); }
   };
+
+  log('INFO', `query start: mode=${activePermMode} effort=${opts.effort || 'default'} ` +
+    `model=${model || 'default'} resume=${resuming} promptLen=${text.length}`);
+
+  // Stall watchdog — the reported "chat hangs" symptom. If no SDK event arrives
+  // for a while during an active run (long thinking, a slow tool, a retry/
+  // backoff, or auto-compaction), log how long it's been quiet so the add-on log
+  // shows whether it's truly stuck or just working. Cleared in `finally`.
+  let lastEventAt = Date.now();
+  let lastEventKind = 'start';
+  const watchdog = setInterval(() => {
+    if (abortController.signal.aborted) return;
+    const idleS = Math.round((Date.now() - lastEventAt) / 1000);
+    if (idleS >= 20) log('WARN', `query quiet for ${idleS}s (last event: ${lastEventKind}) — still awaiting the SDK`);
+  }, 15000);
 
   try {
     // Events are broadcast to every connected client. Persistence is handled by
     // the SDK writing to the session store — independent of the requester.
     const q = query({ prompt: text, options: opts });
     for await (const event of q) {
+      lastEventAt = Date.now();
+      lastEventKind = event.type === 'system' ? `system/${event.subtype}` : event.type;
       if (event.type === 'system' && event.subtype === 'init') {
         activeSessionId = event.session_id;
         saveActive();
@@ -749,17 +818,21 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
           cachedSlashCommands = event.slash_commands;
           broadcast({ type: 'slash_commands', commands: cachedSlashCommands });
         }
+        vlog(`init: session=${event.session_id} model=${event.model}`);
 
       } else if (event.type === 'system' && event.subtype === 'compact_boundary') {
         const m = event.compact_metadata || {};
+        log('INFO', `compaction (${m.trigger || 'manual'}): ${m.pre_tokens || '?'} → ${m.post_tokens || '?'} tokens`);
         broadcast({ type: 'compacted', trigger: m.trigger, preTokens: m.pre_tokens, postTokens: m.post_tokens });
         await reportContextUsage(q);
 
       } else if (event.type === 'assistant') {
         for (const block of (event.message?.content || [])) {
           if (block.type === 'text' && block.text) {
+            vlog(`text: ${block.text.length} chars`);
             broadcast({ type: 'text', text: block.text });
           } else if (block.type === 'tool_use') {
+            vlog(`tool_use: ${block.name}`);
             broadcast({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
           }
         }
@@ -775,12 +848,16 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
                   ? block.content.map(b => b.text || '').join('')
                   : JSON.stringify(block.content);
               const output = raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw;
+              vlog(`tool_result: ${raw.length} chars${block.is_error ? ' (error)' : ''}`);
               broadcast({ type: 'tool_result', id: block.tool_use_id, output, isError: block.is_error });
             }
           }
         }
 
       } else if (event.type === 'result') {
+        const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+        log('INFO', `result: ${event.subtype} in ${secs}s, ${event.num_turns} turns, ` +
+          `$${(event.total_cost_usd || 0).toFixed(4)}`);
         broadcast({
           type: 'result',
           success: event.subtype === 'success',
@@ -797,14 +874,17 @@ async function runQuery(ws, state, { text, permissionMode, model }) {
   } catch (err) {
     if (!abortController.signal.aborted) {
       const message = String(err?.message || err);
+      log('ERROR', `query failed after ${((Date.now() - startedAt) / 1000).toFixed(1)}s: ${message}`);
       // A stale resume id (e.g. after the SDK session expired) — drop it so the
       // next prompt starts a fresh session.
       if (resuming) { activeSessionId = null; saveActive(); }
       broadcast({ type: 'error', message });
     }
   } finally {
+    clearInterval(watchdog);
     if (activeQuery === abortController) activeQuery = null;
     if (abortController.signal.aborted) {
+      log('INFO', `query aborted by user after ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
       broadcast({ type: 'aborted' });
     }
     // Refresh the session list so the new/updated session (and its title) appears
@@ -826,4 +906,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Working dir: ${WORK_DIR}`);
   console.log(`  Plugin dir:  ${PLUGIN_DIR}`);
   console.log(`  /addon_configs access: ${ALLOW_ADDON_CONFIGS ? 'enabled' : 'blocked'}`);
+  console.log(`  Verbose logging: ${VERBOSE_LOGGING ? 'on' : 'off'}`);
 });

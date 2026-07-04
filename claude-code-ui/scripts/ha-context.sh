@@ -300,6 +300,9 @@ ha-ws-client logbook                          # recent logbook entries
 ha-lovelace list                              # list storage-mode dashboards
 ha-lovelace get my-dashboard > /tmp/d.json    # fetch a dashboard config
 ha-lovelace save /tmp/d.json my-dashboard     # save it back
+ha-lovelace create my-room "My Room"          # create a NEW dashboard (url_path needs a hyphen)
+ha-lovelace save /tmp/d.json my-room          #   then write its views (new dashboards start empty)
+ha-lovelace delete my-room                    # delete a storage-mode dashboard
 
 # REST is fine for states/services only:
 curl -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/core/api/states

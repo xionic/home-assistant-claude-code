@@ -25,6 +25,7 @@ const newSessionBtn  = document.getElementById('new-session-btn');
 const settingsBtn    = document.getElementById('settings-btn');
 const settingsPanel  = document.getElementById('settings-panel');
 const modelSelect    = document.getElementById('model-select');
+const effortSelect   = document.getElementById('effort-select');
 const sessionsBtn    = document.getElementById('sessions-btn');
 const sessionsPanel  = document.getElementById('sessions-panel');
 const sessionsListEl = document.getElementById('sessions-list');
@@ -274,11 +275,26 @@ function handleServerMessage(msg) {
 
 // ── Message rendering ──────────────────────────────────────────────────────
 
-function appendUserBubble(text) {
+// Compact HH:MM timestamp shown on each message. `ts` (epoch ms) comes from the
+// stored transcript on reload; live messages pass nothing and get stamped now.
+function fmtTime(ms) {
+  const d = ms ? new Date(ms) : new Date();
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function addTime(bubble, ts) {
+  const t = document.createElement('span');
+  t.className = 'msg-time';
+  t.textContent = fmtTime(ts);
+  t.title = (ts ? new Date(ts) : new Date()).toLocaleString();
+  bubble.appendChild(t);
+}
+
+function appendUserBubble(text, ts) {
   lastAssistantBubble = null;
   endToolGroup();
   const div = mkBubble('user');
   div.querySelector('.bubble-content').textContent = text;
+  addTime(div, ts);
   messagesEl.appendChild(div);
   scrollBottom();
 }
@@ -287,10 +303,11 @@ function renderMarkdown(el, raw) {
   el.innerHTML = marked.parse(raw);
 }
 
-function appendAssistantText(text) {
+function appendAssistantText(text, ts) {
   if (!lastAssistantBubble) {
     endToolGroup();
     lastAssistantBubble = mkBubble('assistant');
+    addTime(lastAssistantBubble, ts);
     messagesEl.appendChild(lastAssistantBubble);
   }
   const content = lastAssistantBubble.querySelector('.bubble-content');
@@ -471,8 +488,8 @@ function renderHistory(items) {
   clearScreen();
   for (const it of items) {
     switch (it.kind) {
-      case 'user':        usage.messages++; appendUserBubble(it.text); break;
-      case 'text':        appendAssistantText(it.text); break;
+      case 'user':        usage.messages++; appendUserBubble(it.text, it.ts); break;
+      case 'text':        appendAssistantText(it.text, it.ts); break;
       case 'tool_use':    lastAssistantBubble = null; appendToolUse(it.id, it.name, it.input); break;
       case 'tool_result': appendToolResult(it.id, it.output, it.isError); break;
       case 'result':      lastAssistantBubble = null; appendResultLine(it);
@@ -491,17 +508,31 @@ function renderHistory(items) {
 }
 
 // ── Working indicator ────────────────────────────────────────────────────────
+// The working indicator shows elapsed seconds so a long silent stretch (deep
+// thinking, a slow tool, a retry/backoff, or auto-compaction) reads as "still
+// going" rather than "stuck". The timer restarts each time the indicator
+// reappears, so it measures the *current* wait.
+let thinkingTimer = null;
 function showThinking() {
   if (thinkingEl) { messagesEl.appendChild(thinkingEl); scrollBottom(); return; }
+  const start = Date.now();
   thinkingEl = document.createElement('div');
   thinkingEl.className = 'thinking';
   thinkingEl.innerHTML =
     '<span class="thinking-dots"><i></i><i></i><i></i></span>' +
     '<span class="thinking-label">Working…</span>';
   messagesEl.appendChild(thinkingEl);
+  const label = thinkingEl.querySelector('.thinking-label');
+  thinkingTimer = setInterval(() => {
+    if (!thinkingEl) return;
+    const s = Math.round((Date.now() - start) / 1000);
+    if (s >= 30) { label.textContent = `Working… ${s}s — long turns can take a minute or more`; thinkingEl.classList.add('slow'); }
+    else if (s >= 3) label.textContent = `Working… ${s}s`;
+  }, 1000);
   scrollBottom();
 }
 function hideThinking() {
+  if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
 }
 
@@ -524,15 +555,21 @@ function fmtTokens(n) {
 }
 
 function updateCtxHint() {
+  ctxTokensEl.classList.remove('ctx-warn', 'ctx-danger');
   if (!ctxUsage || !ctxUsage.totalTokens) { ctxTokensEl.classList.add('hidden'); return; }
   const { totalTokens, maxTokens, autoCompactThreshold, autoCompactEnabled } = ctxUsage;
   const compact = autoCompactEnabled && autoCompactThreshold;
   const limit = compact ? autoCompactThreshold : maxTokens;
   let text = `${fmtTokens(totalTokens)} tokens`;
+  let pct = 0;
   if (limit) {
-    const pct = Math.min(100, Math.round(totalTokens / limit * 100));
+    pct = Math.min(100, Math.round(totalTokens / limit * 100));
     text += compact ? ` · ${pct}% to auto-compact` : ` · ${pct}% of ${fmtTokens(maxTokens)}`;
   }
+  // As the window fills, warn — and once nearly full, nudge toward /compact,
+  // since that's the point where a chat can appear to stall while it compacts.
+  if (pct >= 95) { text += ' · run /compact'; ctxTokensEl.classList.add('ctx-danger'); }
+  else if (pct >= 80) ctxTokensEl.classList.add('ctx-warn');
   ctxTokensEl.textContent = text;
   ctxTokensEl.classList.remove('hidden');
 }
@@ -820,6 +857,7 @@ inputForm.onsubmit = (e) => {
     text,
     permissionMode: permModeSelect.value,
     model: localStorage.getItem('model') || undefined,
+    effort: localStorage.getItem('effort') || undefined,
   }));
 };
 
@@ -1064,6 +1102,10 @@ document.addEventListener('click', (e) => {
   if (storedModel) { ensureModelOption(storedModel); modelSelect.value = storedModel; }
 }
 modelSelect.onchange = () => { localStorage.setItem('model', modelSelect.value); };
+
+// Reasoning effort — empty string means "let the SDK/model decide" (no override).
+effortSelect.value = localStorage.getItem('effort') || '';
+effortSelect.onchange = () => { localStorage.setItem('effort', effortSelect.value); };
 
 // Restore + persist the permission mode so it survives navigating away. The
 // add-on's default_permission_mode (sent as a 'config' message) fills in when

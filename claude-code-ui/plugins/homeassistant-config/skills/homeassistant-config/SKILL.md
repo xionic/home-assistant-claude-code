@@ -382,9 +382,18 @@ ha-lovelace get my-dashboard
 ha-lovelace save /tmp/dash.json
 ha-lovelace save /tmp/dash.json my-dashboard
 echo '{"views":[{"title":"Home","cards":[]}]}' | ha-lovelace save -
+
+# Create a NEW storage-mode dashboard (url_path must contain a hyphen), then save its views
+ha-lovelace create my-room "My Room"                       # options: --icon mdi:sofa --no-sidebar --admin
+ha-lovelace save /tmp/dash.json my-room                    # new dashboards start empty
+
+# Delete a storage-mode dashboard (resolved by url_path)
+ha-lovelace delete my-room
 ```
 
 Workflow for an edit: `ha-lovelace get [url_path] > /tmp/dash.json`, modify the JSON, then `ha-lovelace save /tmp/dash.json [url_path]`.
+
+Workflow for a new dashboard: `ha-lovelace create <url-path> "<Title>"`, then `ha-lovelace save <file> <url-path>` to populate its views. The url_path becomes the URL (`/<url-path>`) and must contain a hyphen.
 
 **Mode matters:**
 - **Storage mode** → use `ha-lovelace get`/`save` as above.

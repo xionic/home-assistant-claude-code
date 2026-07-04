@@ -23,6 +23,13 @@ configuration:
       add-ons (mounted at /addon_configs). Off by default; while off, any tool
       call touching /addon_configs is blocked. Turn on only if you want help
       configuring other add-ons — their configs may contain secrets.
+  verbose_logging:
+    name: Verbose logging
+    description: >-
+      Write detailed per-event logs (each text chunk, tool call, tool result,
+      and context-window usage) to the add-on log. Useful for diagnosing a chat
+      that seems to hang. Off by default to keep the log readable; milestone
+      logs (query start/end, compaction, stalls, errors) are always recorded.
   debug:
     name: Debug mode (dangerous)
     description: >-

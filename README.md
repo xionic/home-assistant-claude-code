@@ -36,6 +36,7 @@ running inside HA and reachable from your phone through the HA app.
 | `ha_token` | `""` | Optional long-lived token. Only needed if you enable `ha-mcp`; not required for normal use |
 | `ha_smart_context` | `true` | Generate a `CLAUDE.md` with HA system info that Claude loads each session |
 | `allow_addon_configs` | `false` | Let Claude read/edit other add-ons' config folders under `/addon_configs`. Off by default; while off, tool calls touching that path are blocked |
+| `verbose_logging` | `false` | Write detailed per-event logs to the add-on log for diagnosing hangs. Milestone logs (query start/end, compaction, stalls, errors) are always recorded |
 | `enable_ha_mcp` | `false` | Optional `ha-mcp` MCP server. **Off by default** — `ha-ws-client`/`ha-lovelace` are used instead (see below) |
 | `bypass_permissions` | `false` | Default the session to auto-approving tools |
 | `debug` | `false` | Expose read-only `/diag` diagnostic endpoints on the internal port |

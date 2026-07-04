@@ -10,10 +10,15 @@
  *   ha-lovelace list                       # list storage-mode dashboards
  *   ha-lovelace get [url_path]             # get a dashboard config (default if omitted)
  *   ha-lovelace save <file|-> [url_path]   # save config from a JSON file or stdin
+ *   ha-lovelace create <url_path> <title> [--icon mdi:x] [--no-sidebar] [--admin]
+ *                                          # create a new empty storage-mode dashboard
+ *   ha-lovelace delete <url_path>          # delete a storage-mode dashboard
  *
  * Notes:
  *  - YAML-mode dashboards cannot be saved over WebSocket; edit their .yaml files.
  *  - `save` expects a JSON document of the full dashboard config ({ "views": [...] }).
+ *  - `create` makes the dashboard (url_path must contain a hyphen, e.g. "my-room");
+ *    then `save <file> <url_path>` writes its views. New dashboards start empty.
  */
 const WebSocket = require('ws');
 const fs = require('fs');
@@ -24,7 +29,8 @@ const WS_URL = 'ws://supervisor/core/api/websocket';
 const [, , cmd, ...rest] = process.argv;
 
 function usage() {
-  console.error('Usage: ha-lovelace <list | get [url_path] | save <file|-> [url_path]>');
+  console.error('Usage: ha-lovelace <list | get [url_path] | save <file|-> [url_path] | ' +
+    'create <url_path> <title> [--icon mdi:x] [--no-sidebar] [--admin] | delete <url_path>>');
   process.exit(2);
 }
 
@@ -33,15 +39,28 @@ if (!TOKEN) { console.error('Error: no SUPERVISOR_TOKEN or HA_TOKEN in environme
 
 const ws = new WebSocket(WS_URL);
 let nextId = 1;
+// Per-request-id response handlers, so multi-step commands (delete) can chain.
+const handlers = new Map();
 
-function send(obj) { ws.send(JSON.stringify(obj)); }
+function send(obj, onResult) {
+  const id = nextId++;
+  if (onResult) handlers.set(id, onResult);
+  ws.send(JSON.stringify({ ...obj, id }));
+  return id;
+}
+
+// Default single-shot handler: print the result JSON and exit.
+function printAndExit(result) {
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(0);
+}
 
 ws.on('message', (data) => {
   let msg;
   try { msg = JSON.parse(data); } catch { return; }
 
   if (msg.type === 'auth_required') {
-    send({ type: 'auth', access_token: TOKEN });
+    ws.send(JSON.stringify({ type: 'auth', access_token: TOKEN }));
   } else if (msg.type === 'auth_invalid') {
     console.error('Error: authentication failed —', msg.message || 'auth_invalid');
     process.exit(1);
@@ -52,8 +71,9 @@ ws.on('message', (data) => {
       console.error('Error:', JSON.stringify(msg.error || {}));
       process.exit(1);
     }
-    console.log(JSON.stringify(msg.result, null, 2));
-    process.exit(0);
+    const handler = handlers.get(msg.id) || printAndExit;
+    handlers.delete(msg.id);
+    handler(msg.result);
   }
 });
 
@@ -61,11 +81,11 @@ ws.on('error', (e) => { console.error('WebSocket error:', e.message); process.ex
 
 function runCommand() {
   if (cmd === 'list') {
-    send({ id: nextId++, type: 'lovelace/dashboards/list' });
+    send({ type: 'lovelace/dashboards/list' });
 
   } else if (cmd === 'get') {
     const urlPath = rest[0];
-    const m = { id: nextId++, type: 'lovelace/config', force: true };
+    const m = { type: 'lovelace/config', force: true };
     if (urlPath) m.url_path = urlPath;
     send(m);
 
@@ -87,9 +107,47 @@ function runCommand() {
       console.error('Error: config must be valid JSON —', e.message);
       process.exit(1);
     }
-    const m = { id: nextId++, type: 'lovelace/config/save', config };
+    const m = { type: 'lovelace/config/save', config };
     if (urlPath) m.url_path = urlPath;
     send(m);
+
+  } else if (cmd === 'create') {
+    // create <url_path> <title> [--icon mdi:x] [--no-sidebar] [--admin]
+    const urlPath = rest[0];
+    const title = rest[1];
+    if (!urlPath || !title) usage();
+    if (!urlPath.includes('-')) {
+      console.error('Error: url_path must contain a hyphen (e.g. "my-room")');
+      process.exit(1);
+    }
+    const m = {
+      type: 'lovelace/dashboards/create',
+      url_path: urlPath,
+      title,
+      mode: 'storage',
+      show_in_sidebar: !rest.includes('--no-sidebar'),
+      require_admin: rest.includes('--admin'),
+    };
+    const iconIdx = rest.indexOf('--icon');
+    if (iconIdx !== -1 && rest[iconIdx + 1]) m.icon = rest[iconIdx + 1];
+    send(m);
+
+  } else if (cmd === 'delete') {
+    // Delete needs the dashboard_id, but url_path is what humans/agents know —
+    // list the dashboards, resolve the id, then delete.
+    const urlPath = rest[0];
+    if (!urlPath) usage();
+    send({ type: 'lovelace/dashboards/list' }, (dashboards) => {
+      const match = (dashboards || []).find((d) => d.url_path === urlPath);
+      if (!match) {
+        console.error(`Error: no storage-mode dashboard with url_path "${urlPath}"`);
+        process.exit(1);
+      }
+      send({ type: 'lovelace/dashboards/delete', dashboard_id: match.id }, () => {
+        console.log(JSON.stringify({ deleted: urlPath, dashboard_id: match.id }, null, 2));
+        process.exit(0);
+      });
+    });
 
   } else {
     usage();

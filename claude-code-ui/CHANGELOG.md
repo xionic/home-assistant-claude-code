@@ -1,3 +1,13 @@
+## 1.3.0
+- **Plan mode** added to the permission dropdown — Claude researches read-only and proposes a plan before making changes; you approve the plan to proceed
+- **Reasoning effort** selector in Settings (Low → Max) so you can trade speed for depth per chat
+- **Message timestamps** — a compact time now appears on each message (live and after a reload)
+- **Working indicator shows elapsed seconds** on long turns, so a quiet stretch (deep thinking, a slow tool, or compaction) reads as "still going" rather than stuck
+- **Context warning** — the token indicator turns amber, then red with a "run /compact" nudge as the window fills
+- **New-dashboard support** — `ha-lovelace create`/`delete` let Claude make and remove Lovelace dashboards (previously it could only edit existing ones)
+- **/compact no longer clutters the chat** — the slash-command echo (`<command-name>…`) is filtered from the transcript
+- **Add-on logging** — query start/end (with duration), compaction, errors, and a stall watchdog now log to the add-on log; a new **Verbose logging** option adds per-event detail for diagnosing hangs
+
 ## 1.2.0
 - New **Allow access to other add-on configs** option (off by default): when enabled, Claude can read and edit other add-ons' config folders under `/addon_configs`; while disabled, any tool call touching that path is blocked at the tool layer (enforced in every permission mode, including Auto)
 

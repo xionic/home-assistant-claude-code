@@ -136,6 +136,7 @@ start_server() {
     export PLUGIN_DIR="/opt/plugins/homeassistant-config"
     export DEFAULT_PERMISSION_MODE=$(bashio::config 'default_permission_mode' 'ask')
     export DEBUG_MODE=$(bashio::config 'debug' 'false')
+    export VERBOSE_LOGGING=$(bashio::config 'verbose_logging' 'false')
 
     if [ "$DEBUG_MODE" = "true" ]; then
         bashio::log.info "Debug mode enabled — /diag endpoint active"
@@ -145,6 +146,10 @@ start_server() {
         bashio::log.info "Other add-on config access enabled — /addon_configs is available"
     else
         bashio::log.info "Other add-on config access disabled — /addon_configs is blocked"
+    fi
+
+    if [ "$VERBOSE_LOGGING" = "true" ]; then
+        bashio::log.info "Verbose logging enabled — per-event query logs will appear here"
     fi
 
     cd /config

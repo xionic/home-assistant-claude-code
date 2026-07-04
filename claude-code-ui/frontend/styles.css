@@ -255,6 +255,18 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 
 .bubble-user .bubble-content { white-space: pre-wrap; }
 
+/* Compact per-message timestamp — small and muted so it barely takes space */
+.msg-time {
+  display: block;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0.55;
+  margin-top: 4px;
+  user-select: none;
+}
+
 /* Markdown rendering in assistant bubbles */
 .bubble-assistant .bubble-content p { margin-bottom: 0.65em; }
 .bubble-assistant .bubble-content p:last-child { margin-bottom: 0; }
@@ -467,6 +479,8 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 .thinking-dots i:nth-child(2) { animation-delay: 0.2s; }
 .thinking-dots i:nth-child(3) { animation-delay: 0.4s; }
 .thinking-label { font-size: 13px; color: var(--text-muted); }
+/* After a long quiet stretch the label grows a reassurance; dim it slightly */
+.thinking.slow .thinking-label { color: #b99; font-style: italic; }
 
 @keyframes thinking-bounce {
   0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
@@ -625,6 +639,9 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
   white-space: nowrap;
 }
 .ctx-tokens.hidden { display: none; }
+/* Context filling up: amber warning, then red once nearly full */
+.ctx-tokens.ctx-warn   { color: #d9a94a; opacity: 1; }
+.ctx-tokens.ctx-danger { color: var(--error-text); font-weight: 600; }
 
 .prompt-input {
   background: var(--surface-2);

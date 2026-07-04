@@ -103,9 +103,19 @@ There is one persistent conversation (single-user add-on). `server/index.js` kee
 Selectable in the UI per-prompt; the **default for new chats** comes from the `default_permission_mode` add-on option (`DEFAULT_PERMISSION_MODE` → sent to the client in the `config` connect message; localStorage overrides it once the user picks one).
 
 - **Ask** — `canUseTool` prompts the user for each tool call
+- **Plan** — SDK-native plan mode (`permissionMode: 'plan'`): the model is restricted to read-only tools and proposes a plan. Routed through `canUseTool` too, which auto-allows read-only tools and only prompts on `ExitPlanMode` (the plan-approval step). Like `auto`, a run *started* in plan can't be live-switched.
 - **Accept Edits** — file edits (`EDIT_TOOLS`) auto-approved, other tools prompt
 - **Bypass** — all tools auto-approved (auto-allow `canUseTool`, not the SDK `bypassPermissions` mode, which the CLI refuses when running as root — it exits 1)
 - **Auto** — a model classifier approves/denies each tool, no prompts (`permissionMode: 'auto'`, no `canUseTool`)
+
+**Reasoning effort:** the Settings panel has an effort selector (Low→Max) sent as `effort` on the prompt; the server sets `opts.effort` only when a level is chosen (else the SDK model default, high). Higher effort means longer, quieter thinking — a common cause of the "chat looks stuck" perception.
+
+## Logging & the "chat hangs" symptom
+
+Reported symptom: a response stops coming, then resumes minutes later (not a true hang — usually long silent thinking, a slow tool, a retry/backoff, or auto-compaction). Instrumentation added for it:
+- **Server** (`server/index.js`): milestone logs always at INFO — query start (mode/effort/model/resume), result (duration/turns/cost), compaction, errors. A **stall watchdog** logs a WARN when no SDK event arrives for ≥20s during a run. Context usage is logged each turn (WARN ≥90%). The `verbose_logging` add-on option (`VERBOSE_LOGGING`) adds per-event DEBUG logs (each text/tool_use/tool_result). All go to the add-on log.
+- **Frontend**: the Working indicator shows **elapsed seconds** (restarts each quiet stretch) and the context indicator turns amber→red with a `/compact` nudge as the window fills.
+- **/compact echo**: slash-command runs are recorded in the transcript as user messages wrapped in `<command-name>…`/`<local-command-stdout>…`. `isCommandEcho()` in `lineToItems` filters them so `/compact` doesn't pollute the chat.
 
 **Live mid-prompt switching:** ask/acceptEdits/bypass all route through a single `canUseTool` that reads the module-level `activePermMode` at call time, so changing the dropdown mid-run takes effect immediately (the client sends `set_perm_mode`). Switching to bypass/acceptEdits also auto-resolves any pending permission prompt (server emits `permission_resolved` so the UI dismisses the card). **Caveat:** `auto` is SDK-native with no `canUseTool`, so a run *started* in auto can't be live-switched — the change applies to the next prompt. `canUseTool` is also not invoked for external MCP server tools (none are configured now).
 

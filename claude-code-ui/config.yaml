@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "1.2.0"
+version: "1.3.0"
 slug: "claude-code-ui"
 description: "Claude Code in your browser with Home Assistant integration and mobile-friendly chat UI."
 url: "https://github.com/xionic/home-assistant-claude-code"
@@ -23,10 +23,12 @@ options:
   default_permission_mode: ask
   ha_smart_context: true
   allow_addon_configs: false
+  verbose_logging: false
   debug: false
 schema:
   anthropic_api_key: str?
   default_permission_mode: "list(ask|auto|acceptEdits|bypass)"
   ha_smart_context: bool
   allow_addon_configs: bool
+  verbose_logging: bool
   debug: bool
