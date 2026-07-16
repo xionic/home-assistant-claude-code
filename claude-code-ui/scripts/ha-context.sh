@@ -310,6 +310,23 @@ curl -H "Authorization: Bearer $SUPERVISOR_TOKEN" http://supervisor/core/api/sta
 
 For YAML-mode dashboards (not listed by `ha-lovelace list`), edit the YAML files
 in `/config` directly. See the `homeassistant-config` skill for YAML patterns.
+
+## Linking to Home Assistant in your replies
+
+The chat UI turns any bare `entity_id` you mention into a link automatically —
+just write `sensor.kitchen_temp` or `automation.garage_check` normally, no markup
+needed. (It links only real entities, and skips fenced code blocks.)
+
+For anything without an entity_id — a **dashboard** especially — write a markdown
+link yourself, using a root-relative path so it works on any HA URL:
+
+```markdown
+[My Room](/my-room)                       <!-- dashboard, by its url_path -->
+[Garage check](/config/automation/edit/1637680802337)   <!-- automation, by its `id` attribute -->
+[Kitchen temp](/history?entity_id=sensor.kitchen_temp)  <!-- entity history -->
+```
+
+When you create or change something, link it so the user can jump straight to it.
 APIREF
 
     # Other add-ons' config folders — only advertised when the option enables it.

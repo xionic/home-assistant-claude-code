@@ -31,6 +31,20 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 // Valid reasoning-effort levels the UI can request (SDK `effort` option).
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
+// Render the SDK's suggested permission rules into a short human label for the
+// "Always" button (e.g. "Bash(git status:*)" or "Read").
+function describeSuggestions(suggestions) {
+  const rules = [];
+  for (const s of suggestions || []) {
+    if ((s.type === 'addRules' || s.type === 'replaceRules') && Array.isArray(s.rules)) {
+      for (const r of s.rules) rules.push(r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName);
+    } else if (s.type === 'setMode') {
+      rules.push(`mode: ${s.mode}`);
+    }
+  }
+  return [...new Set(rules)].join(', ');
+}
+
 // ── Auto-continue on usage-limit reset (subscription auth only) ───────────────
 // When a claude.ai subscription 5-hour limit is hit mid-run, the SDK emits a
 // `rate_limit_event` with status 'rejected' and a `resetsAt` epoch. If the user
@@ -690,6 +704,41 @@ function fireAutoContinue() {
   });
 }
 
+// ── Home Assistant deep links ────────────────────────────────────────────────
+// So replies can link straight to the thing they describe, clients get:
+//  - `entities`: every real entity_id, so we only ever linkify things that exist
+//    (a regex alone would happily link "configuration.yaml").
+//  - `automations`: entity_id → editor id. Automation entities expose their
+//    editor id as an `id` attribute, which is what /config/automation/edit/<id>
+//    wants — the entity_id won't work there.
+// Refreshed after every run so a just-created automation links immediately.
+let haLinks = { entities: [], automations: {} };
+
+async function refreshHaLinks() {
+  const tok = process.env.SUPERVISOR_TOKEN;
+  if (!tok) return;
+  try {
+    const res = await fetch('http://supervisor/core/api/states', {
+      headers: { Authorization: `Bearer ${tok}` },
+    });
+    if (!res.ok) { vlog(`ha links: /states returned ${res.status}`); return; }
+    const states = await res.json();
+    const entities = [];
+    const automations = {};
+    for (const s of states) {
+      if (!s || !s.entity_id) continue;
+      entities.push(s.entity_id);
+      if (s.entity_id.startsWith('automation.') && s.attributes && s.attributes.id != null) {
+        automations[s.entity_id] = String(s.attributes.id);
+      }
+    }
+    haLinks = { entities, automations };
+    vlog(`ha links: ${entities.length} entities, ${Object.keys(automations).length} automations`);
+  } catch (e) {
+    vlog(`ha links refresh failed: ${e.message}`);
+  }
+}
+
 wss.on('connection', (ws) => {
   connections.add(ws);
 
@@ -705,6 +754,8 @@ wss.on('connection', (ws) => {
     autoContinue: autoContinue.enabled, autoContinueSupported: isSubscriptionAuth() });
   send(ws, { type: 'auth_status', authenticated: isAuthenticated() });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
+  // Link targets so the client can turn entity ids in replies into HA links
+  send(ws, { type: 'ha_links', entities: haLinks.entities, automations: haLinks.automations });
   // Restore the active session's transcript + the session list on (re)connect
   send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
   send(ws, { type: 'history', items: parseSession(activeSessionId), running: !!activeQuery });
@@ -759,7 +810,9 @@ wss.on('connection', (ws) => {
       if (entry) {
         state.pendingPermissions.delete(msg.id);
         autoResumeState.pendingPermissions.delete(msg.id);
-        entry.resolve(msg.decision === 'allow');
+        // 'allow' | 'always' | 'deny' — 'always' also persists the SDK's
+        // suggested rule so this tool stops prompting.
+        entry.resolve(msg.decision);
       }
     } else if (msg.type === 'user_dialog_response') {
       // Reply to an onUserDialog request (e.g. AskUserQuestion). `result` is the
@@ -785,7 +838,7 @@ wss.on('connection', (ws) => {
           for (const [id, entry] of pending) {
             if (msg.mode === 'bypass' || EDIT_TOOLS.has(entry.toolName)) {
               pending.delete(id);
-              entry.resolve(true);
+              entry.resolve('allow');
               send(conn, { type: 'permission_resolved', id });
             }
           }
@@ -794,7 +847,7 @@ wss.on('connection', (ws) => {
         for (const [id, entry] of autoResumeState.pendingPermissions) {
           if (msg.mode === 'bypass' || EDIT_TOOLS.has(entry.toolName)) {
             autoResumeState.pendingPermissions.delete(id);
-            entry.resolve(true);
+            entry.resolve('allow');
             broadcast({ type: 'permission_resolved', id });
           }
         }
@@ -817,7 +870,7 @@ wss.on('connection', (ws) => {
     // Do NOT abort the active query — it keeps running and persisting so the
     // chat is complete when the user navigates back. Just clear any pending
     // permission prompts tied to this (now gone) client so the run doesn't hang.
-    for (const entry of state.pendingPermissions.values()) entry.resolve(false);
+    for (const entry of state.pendingPermissions.values()) entry.resolve('deny');
     state.pendingPermissions.clear();
     for (const resolve of state.pendingDialogs.values()) resolve({ behavior: 'cancelled' });
     state.pendingDialogs.clear();
@@ -886,6 +939,12 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
       // plan): prompt the user.
       return new Promise((resolve) => {
         const id = randomUUID();
+        // The SDK hands us `suggestions`: permission rules that would stop it
+        // asking again for this kind of call (e.g. Bash(git status:*)). Handing
+        // them straight back as `updatedPermissions` on an allow is exactly what
+        // the SDK documents for an "always allow" affordance — that's what makes
+        // a decision stick to the *tool* rather than just this one call.
+        const suggestions = Array.isArray(options.suggestions) ? options.suggestions : [];
         const req = {
           type: 'permission_request',
           id,
@@ -893,6 +952,8 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
           input,
           title: options.title,
           description: options.description,
+          canAlways: suggestions.length > 0,
+          alwaysLabel: describeSuggestions(suggestions),
         };
         if (ws.readyState === 1) {
           send(ws, req);
@@ -906,9 +967,17 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
           resolve({ behavior: 'deny', message: 'No interactive client connected to approve this tool.' });
           return;
         }
-        const finish = (allowed) => resolve(allowed
-          ? { behavior: 'allow', updatedInput: input }
-          : { behavior: 'deny', message: 'Denied by user' });
+        // decision: 'allow' (this call) | 'always' (this call + persist the rule) | 'deny'
+        const finish = (decision) => {
+          if (decision === 'always' && suggestions.length) {
+            log('INFO', `permission: always-allow ${describeSuggestions(suggestions)}`);
+            resolve({ behavior: 'allow', updatedInput: input, updatedPermissions: suggestions });
+          } else if (decision === 'always' || decision === 'allow') {
+            resolve({ behavior: 'allow', updatedInput: input });
+          } else {
+            resolve({ behavior: 'deny', message: 'Denied by user' });
+          }
+        };
         state.pendingPermissions.set(id, { toolName, resolve: finish });
         options.signal.addEventListener('abort', () => {
           state.pendingPermissions.delete(id);
@@ -1087,6 +1156,11 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     // Refresh the session list so the new/updated session (and its title) appears
     broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
 
+    // Refresh HA link targets — anything the run just created (a new automation,
+    // a new entity) should be linkable in the reply that announces it.
+    refreshHaLinks().then(() =>
+      broadcast({ type: 'ha_links', entities: haLinks.entities, automations: haLinks.automations }));
+
     // Auto-continue: if a 5-hour usage limit stopped this run (and the user
     // didn't abort / it didn't otherwise succeed), schedule a resume for when
     // the limit resets — subscription auth and the toggle permitting.
@@ -1123,6 +1197,7 @@ function send(ws, data) {
 sanitizeMcpState();
 loadActive();
 loadAutoContinue();
+refreshHaLinks();   // populate entity/automation link targets at startup
 // Re-arm a resume scheduled before a restart (fires ~immediately if its reset
 // already elapsed while we were down); otherwise drop a now-ineligible pending.
 if (autoContinue.pending) {

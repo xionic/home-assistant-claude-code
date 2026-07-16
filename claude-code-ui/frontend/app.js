@@ -47,6 +47,8 @@ const permTitle      = document.getElementById('perm-title');
 const permToolChip   = document.getElementById('perm-tool-chip');
 const permInputEl    = document.getElementById('perm-input');
 const permAllow      = document.getElementById('perm-allow');
+const permAlways     = document.getElementById('perm-always');
+const permAlwaysHint = document.getElementById('perm-always-hint');
 const permDeny       = document.getElementById('perm-deny');
 const dialogOverlay  = document.getElementById('dialog-overlay');
 const dialogTitle    = document.getElementById('dialog-title');
@@ -160,6 +162,16 @@ function handleServerMessage(msg) {
     case 'slash_commands':
       pluginCommands = Array.isArray(msg.commands) ? msg.commands : [];
       break;
+
+    case 'ha_links': {
+      // Entity/automation link targets. These usually land just after the
+      // history replay, so re-render already-rendered bubbles to pick up links.
+      const had = haEntities.size;
+      haEntities = new Set(Array.isArray(msg.entities) ? msg.entities : []);
+      haAutomationIds = msg.automations || {};
+      if (!had && haEntities.size) relinkRenderedBubbles();
+      break;
+    }
 
     case 'model':
       // The model actually in use, reported by the SDK init event
@@ -343,8 +355,96 @@ function appendUserBubble(text, ts) {
   scrollBottom();
 }
 
+// ── Home Assistant deep links ────────────────────────────────────────────────
+// The server sends the real entity ids (so we never link something that doesn't
+// exist) and the automation entity_id → editor id map. We're served same-origin
+// under HA ingress, so root-relative links resolve against whatever URL HA is on
+// (local, Nabu Casa, …) — but they must target _top to escape the ingress iframe.
+let haEntities = new Set();
+let haAutomationIds = {};
+
+function haEntityUrl(id) {
+  // Automations get their editor (what you actually want for "the automation
+  // I just made"); everything else gets the History panel for that entity.
+  if (id.startsWith('automation.') && haAutomationIds[id]) {
+    return `/config/automation/edit/${encodeURIComponent(haAutomationIds[id])}`;
+  }
+  return `/history?entity_id=${encodeURIComponent(id)}`;
+}
+
+function mkEntityLink(id) {
+  const a = document.createElement('a');
+  a.className = 'ha-entity-link';
+  a.href = haEntityUrl(id);
+  a.target = '_top';
+  a.rel = 'noopener';
+  a.textContent = id;
+  a.title = id.startsWith('automation.') && haAutomationIds[id]
+    ? `Open automation "${id}" in Home Assistant`
+    : `Open ${id} in Home Assistant`;
+  return a;
+}
+
+const ENTITY_RE = /\b[a-z_]+\.[a-z0-9_]+\b/g;
+
+// Turn bare entity ids in the reply into links. Skips fenced code blocks (<pre>)
+// so YAML stays clean and copy-pasteable, but does run inside inline <code>,
+// which is where Claude usually names an entity.
+function linkifyEntities(root) {
+  if (!haEntities.size) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || n.nodeValue.indexOf('.') === -1) return NodeFilter.FILTER_REJECT;
+      if (n.parentElement && n.parentElement.closest('a, pre')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    let frag = null;
+    let last = 0;
+    let m;
+    ENTITY_RE.lastIndex = 0;
+    while ((m = ENTITY_RE.exec(text))) {
+      if (!haEntities.has(m[0])) continue;
+      frag = frag || document.createDocumentFragment();
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      frag.appendChild(mkEntityLink(m[0]));
+      last = m.index + m[0].length;
+    }
+    if (frag) {
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+}
+
+// Any link Claude writes itself (e.g. to a dashboard) must also escape the
+// iframe; external links open in a new tab instead.
+function fixAnchorTargets(root) {
+  for (const a of root.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+    else if (href.startsWith('/')) { a.target = '_top'; a.rel = 'noopener'; }
+  }
+}
+
 function renderMarkdown(el, raw) {
   el.innerHTML = marked.parse(raw);
+  linkifyEntities(el);
+  fixAnchorTargets(el);
+}
+
+// Re-render assistant bubbles from their stored markdown once link targets
+// arrive (the map lands slightly after the history replay on connect).
+function relinkRenderedBubbles() {
+  for (const content of messagesEl.querySelectorAll('.bubble-assistant .bubble-content')) {
+    if (content._rawMd) renderMarkdown(content, content._rawMd);
+  }
 }
 
 function appendAssistantText(text, ts) {
@@ -733,12 +833,21 @@ function mkBubble(role) {
 
 // ── Permission prompt ──────────────────────────────────────────────────────
 
-function showPermissionPrompt({ id, toolName, input, title }) {
+function showPermissionPrompt({ id, toolName, input, title, canAlways, alwaysLabel }) {
   pendingPermId = id;
   permToolChip.textContent = toolName;
   permTitle.textContent = title || `Allow ${toolName}?`;
   const raw = JSON.stringify(input, null, 2);
   permInputEl.textContent = raw.length > 600 ? raw.slice(0, 600) + '\n…' : raw;
+  // "Always" is only offered when the SDK supplied rules that would stop it
+  // asking again; the label shows exactly what's being allowed from now on.
+  permAlways.classList.toggle('hidden', !canAlways);
+  permAlwaysHint.classList.toggle('hidden', !canAlways);
+  if (canAlways) {
+    permAlwaysHint.textContent = alwaysLabel
+      ? `Always = don't ask again for: ${alwaysLabel}`
+      : "Always = don't ask again for this tool";
+  }
   permOverlay.classList.remove('hidden');
 }
 
@@ -749,8 +858,9 @@ function resolvePermission(decision) {
   permOverlay.classList.add('hidden');
 }
 
-permAllow.onclick = () => resolvePermission('allow');
-permDeny.onclick  = () => resolvePermission('deny');
+permAllow.onclick  = () => resolvePermission('allow');
+permAlways.onclick = () => resolvePermission('always');
+permDeny.onclick   = () => resolvePermission('deny');
 
 // Close on backdrop click
 permOverlay.onclick = (e) => { if (e.target === permOverlay) resolvePermission('deny'); };
