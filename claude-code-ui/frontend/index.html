@@ -92,6 +92,13 @@
           <option value="max">Max</option>
         </select>
       </div>
+      <div class="settings-row settings-row-toggle" id="auto-continue-row">
+        <label for="auto-continue-toggle">Auto-continue on limit</label>
+        <input type="checkbox" id="auto-continue-toggle" class="settings-toggle">
+      </div>
+      <p class="settings-hint" id="auto-continue-hint">
+        Resume automatically when the 5-hour usage limit resets.
+      </p>
     </div>
 
     <div id="login-screen" class="login-screen hidden">
@@ -141,6 +148,12 @@
           <button id="dialog-submit" class="btn btn-allow">Submit</button>
         </div>
       </div>
+    </div>
+
+    <div id="auto-continue-banner" class="ac-banner hidden">
+      <span class="ac-banner-icon" aria-hidden="true">&#9203;</span>
+      <span id="ac-banner-text" class="ac-banner-text"></span>
+      <button id="ac-banner-cancel" class="ac-banner-cancel" title="Cancel auto-continue">Cancel</button>
     </div>
 
     <form id="input-form" class="input-form">

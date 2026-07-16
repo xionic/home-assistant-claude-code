@@ -31,6 +31,18 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 // Valid reasoning-effort levels the UI can request (SDK `effort` option).
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
+// ── Auto-continue on usage-limit reset (subscription auth only) ───────────────
+// When a claude.ai subscription 5-hour limit is hit mid-run, the SDK emits a
+// `rate_limit_event` with status 'rejected' and a `resetsAt` epoch. If the user
+// has enabled auto-continue, we persist that and resume the conversation
+// automatically once the limit resets. Only the 5-hour limit is auto-resumed —
+// waiting out a 7-day limit unattended is rarely what anyone wants.
+const AUTO_CONTINUE_FILE = path.join('/data', 'auto-continue.json');
+const AUTO_CONTINUE_BUFFER_MS = 15000;    // resume a little past resetsAt, to be safe
+const AUTO_CONTINUE_MAX_ATTEMPTS = 3;     // consecutive resumes before giving up
+const AUTO_CONTINUE_PROMPT =
+  'The usage limit has reset. Please continue from where you left off.';
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 // Everything here lands in the add-on log (Supervisor → add-on → Log). We keep
 // milestone logs at INFO always, and gate the noisy per-event stream behind the
@@ -75,6 +87,18 @@ const ADDON_CONFIGS_HOOKS = ALLOW_ADDON_CONFIGS
 // The permission mode for the in-flight run. Updated live by `set_perm_mode`
 // messages so the user can change how tools are approved mid-prompt.
 let activePermMode = DEFAULT_PERMISSION_MODE;
+
+// Auto-continue runtime state. `enabled` is the user toggle (persisted to /data);
+// `pending` holds a scheduled resume so it survives an add-on/HA restart.
+// `autoContinueTimer` is the live setTimeout handle (not persisted).
+let autoContinue = { enabled: false, pending: null };
+let autoContinueTimer = null;
+
+// Shared permission/dialog state for headless auto-continue runs. A tool prompt
+// during an auto-resume (there's no originating browser socket) is surfaced to,
+// and answered by, any connected client via this module-level state rather than
+// hanging on a closed socket.
+const autoResumeState = { pendingPermissions: new Map(), pendingDialogs: new Map() };
 
 const app = express();
 const server = createServer(app);
@@ -221,6 +245,32 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
   res.json({ prompt, events });
 });
 
+// Auto-continue state, and a way to exercise the schedule→resume path without
+// waiting for a real usage limit: ?simulate=<seconds> arms a resume that fires
+// after N seconds (bypass mode, resuming the active session). Debug-only.
+if (DEBUG_MODE) app.get('/diag/autocontinue', (req, res) => {
+  const sim = req.query.simulate;
+  if (sim != null) {
+    if (!isSubscriptionAuth()) return res.json({ error: 'not subscription auth' });
+    if (!activeSessionId)      return res.json({ error: 'no active session to resume' });
+    const secs = Math.max(1, parseInt(sim, 10) || 5);
+    autoContinue.enabled = true;
+    saveAutoContinue();
+    scheduleAutoContinue({
+      resetsAt: Math.floor(Date.now() / 1000) + secs,
+      rateLimitType: 'five_hour',
+      model: null, effort: null, permissionMode: 'bypass', attempts: 1,
+    });
+  }
+  res.json({
+    enabled: autoContinue.enabled,
+    pending: autoContinue.pending,
+    timerArmed: !!autoContinueTimer,
+    subscription: isSubscriptionAuth(),
+    activeSessionId,
+  });
+});
+
 // Inspect the active session (resume id + parsed transcript length).
 if (DEBUG_MODE) app.get('/diag/conv', (req, res) => {
   if (req.query.clear) { abortActive(); activeSessionId = null; saveActive(); broadcast({ type: 'cleared' }); }
@@ -365,6 +415,15 @@ function sanitizeMcpState() {
 function isAuthenticated() {
   if (process.env.ANTHROPIC_API_KEY) return true;
   return existsSync(path.join(CLAUDE_CONFIG_DIR, '.credentials.json'));
+}
+
+// Subscription (claude.ai sign-in) vs API-key auth. Auto-continue only applies to
+// subscription auth: the SDK's `rate_limit_event` (with a `resetsAt` reset time)
+// is emitted for subscription users, whereas API-key usage surfaces plain 429s
+// with no reset timestamp to schedule against.
+function isSubscriptionAuth() {
+  return !process.env.ANTHROPIC_API_KEY &&
+    existsSync(path.join(CLAUDE_CONFIG_DIR, '.credentials.json'));
 }
 
 // One active login process shared across all connections
@@ -558,6 +617,79 @@ function abortActive() {
   if (activeQuery) { activeQuery.abort(); activeQuery = null; }
 }
 
+// ── Auto-continue on usage-limit reset ────────────────────────────────────────
+
+function loadAutoContinue() {
+  try {
+    if (existsSync(AUTO_CONTINUE_FILE)) {
+      const d = JSON.parse(readFileSync(AUTO_CONTINUE_FILE, 'utf8'));
+      autoContinue.enabled = !!d.enabled;
+      autoContinue.pending = d.pending || null;
+    }
+  } catch (e) { console.warn('Could not load auto-continue state:', e.message); }
+}
+
+function saveAutoContinue() {
+  try { writeFileSync(AUTO_CONTINUE_FILE, JSON.stringify(autoContinue)); }
+  catch (e) { console.warn('Could not save auto-continue state:', e.message); }
+}
+
+function clearAutoContinueTimer() {
+  if (autoContinueTimer) { clearTimeout(autoContinueTimer); autoContinueTimer = null; }
+}
+
+// Arm (or re-arm) a resume for a pending usage-limit reset. Safe to call on
+// startup: the delay is recomputed from `resetsAt`, so a reset that already
+// elapsed during downtime fires almost immediately. setTimeout's ~24.8-day
+// ceiling comfortably covers a 5-hour wait.
+function scheduleAutoContinue(pending) {
+  clearAutoContinueTimer();
+  autoContinue.pending = pending;
+  saveAutoContinue();
+  const fireAt = pending.resetsAt * 1000 + AUTO_CONTINUE_BUFFER_MS;
+  const delay = Math.max(0, fireAt - Date.now());
+  log('INFO', `auto-continue: ${pending.rateLimitType} limit hit; resuming at ` +
+    `${new Date(fireAt).toISOString()} (in ${Math.round(delay / 1000)}s, attempt ${pending.attempts})`);
+  broadcast({ type: 'auto_continue_pending', resetsAt: pending.resetsAt,
+    rateLimitType: pending.rateLimitType, attempts: pending.attempts });
+  autoContinueTimer = setTimeout(fireAutoContinue, delay);
+}
+
+function cancelAutoContinue(reason) {
+  clearAutoContinueTimer();
+  if (!autoContinue.pending) return;
+  autoContinue.pending = null;
+  saveAutoContinue();
+  log('INFO', `auto-continue: pending resume cancelled (${reason})`);
+  broadcast({ type: 'auto_continue_cancelled', reason });
+}
+
+function fireAutoContinue() {
+  clearAutoContinueTimer();
+  const pending = autoContinue.pending;
+  if (!pending) return;
+  if (!autoContinue.enabled) return cancelAutoContinue('disabled');
+  if (!isSubscriptionAuth())  return cancelAutoContinue('not-subscription');
+  if (!activeSessionId)       return cancelAutoContinue('no-active-session');
+  // A run is somehow already active — wait and retry rather than overlap it.
+  if (activeQuery) { autoContinueTimer = setTimeout(fireAutoContinue, 30000); return; }
+
+  autoContinue.pending = null;
+  saveAutoContinue();
+  log('INFO', `auto-continue: resuming session ${activeSessionId} (attempt ${pending.attempts})`);
+  broadcast({ type: 'auto_continue_resuming', attempts: pending.attempts });
+  // Headless run: a fake never-open socket so send() no-ops and it's not in
+  // `connections`. Its user message ("continue…") still broadcasts to real tabs.
+  const headlessWs = { readyState: 3 };
+  runQuery(headlessWs, autoResumeState, {
+    text: AUTO_CONTINUE_PROMPT,
+    permissionMode: pending.permissionMode,
+    model: pending.model,
+    effort: pending.effort,
+    autoAttempts: pending.attempts,
+  });
+}
+
 wss.on('connection', (ws) => {
   connections.add(ws);
 
@@ -569,12 +701,18 @@ wss.on('connection', (ws) => {
 
   // Greet and immediately report auth status + any known slash commands
   send(ws, { type: 'connected' });
-  send(ws, { type: 'config', defaultPermMode: DEFAULT_PERMISSION_MODE });
+  send(ws, { type: 'config', defaultPermMode: DEFAULT_PERMISSION_MODE,
+    autoContinue: autoContinue.enabled, autoContinueSupported: isSubscriptionAuth() });
   send(ws, { type: 'auth_status', authenticated: isAuthenticated() });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
   // Restore the active session's transcript + the session list on (re)connect
   send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
   send(ws, { type: 'history', items: parseSession(activeSessionId), running: !!activeQuery });
+  // Replay a scheduled auto-continue so a (re)connecting tab shows the countdown.
+  if (autoContinue.pending) {
+    send(ws, { type: 'auto_continue_pending', resetsAt: autoContinue.pending.resetsAt,
+      rateLimitType: autoContinue.pending.rateLimitType, attempts: autoContinue.pending.attempts });
+  }
 
   ws.on('message', (raw) => {
     let msg;
@@ -596,6 +734,7 @@ wss.on('connection', (ws) => {
       abortActive();
     } else if (msg.type === 'new_session') {
       abortActive();
+      cancelAutoContinue('new-session');
       activeSessionId = null;
       saveActive();
       broadcast({ type: 'cleared' });
@@ -604,6 +743,7 @@ wss.on('connection', (ws) => {
       send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
     } else if (msg.type === 'session_switch') {
       abortActive();
+      cancelAutoContinue('session-switch');
       activeSessionId = msg.id || null;
       saveActive();
       broadcast({ type: 'history', items: parseSession(activeSessionId), running: false });
@@ -613,9 +753,12 @@ wss.on('connection', (ws) => {
       if (msg.id === activeSessionId) { activeSessionId = null; saveActive(); broadcast({ type: 'cleared' }); }
       broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
     } else if (msg.type === 'permission_response') {
-      const entry = state.pendingPermissions.get(msg.id);
+      // A prompt may belong to this client's run or to a headless auto-continue
+      // run (answerable by any connected tab).
+      const entry = state.pendingPermissions.get(msg.id) || autoResumeState.pendingPermissions.get(msg.id);
       if (entry) {
         state.pendingPermissions.delete(msg.id);
+        autoResumeState.pendingPermissions.delete(msg.id);
         entry.resolve(msg.decision === 'allow');
       }
     } else if (msg.type === 'user_dialog_response') {
@@ -647,7 +790,25 @@ wss.on('connection', (ws) => {
             }
           }
         }
+        // Same for any headless auto-continue prompt in flight.
+        for (const [id, entry] of autoResumeState.pendingPermissions) {
+          if (msg.mode === 'bypass' || EDIT_TOOLS.has(entry.toolName)) {
+            autoResumeState.pendingPermissions.delete(id);
+            entry.resolve(true);
+            broadcast({ type: 'permission_resolved', id });
+          }
+        }
       }
+    } else if (msg.type === 'set_auto_continue') {
+      autoContinue.enabled = !!msg.enabled;
+      saveAutoContinue();
+      log('INFO', `auto-continue ${autoContinue.enabled ? 'enabled' : 'disabled'}`);
+      broadcast({ type: 'auto_continue_state', enabled: autoContinue.enabled,
+        supported: isSubscriptionAuth() });
+      // Turning it off drops any resume already scheduled.
+      if (!autoContinue.enabled) cancelAutoContinue('disabled');
+    } else if (msg.type === 'cancel_auto_continue') {
+      cancelAutoContinue('user');
     }
   });
 
@@ -663,12 +824,21 @@ wss.on('connection', (ws) => {
   });
 });
 
-async function runQuery(ws, state, { text, permissionMode, model, effort }) {
+async function runQuery(ws, state, { text, permissionMode, model, effort, autoAttempts = 0 }) {
   abortActive();
+
+  // A run that isn't itself the auto-continue firing supersedes any scheduled
+  // resume — the user (or a fresh prompt) has taken over. `fireAutoContinue`
+  // clears `pending` before it calls in here, so this is a no-op for that path.
+  if (autoAttempts === 0 && autoContinue.pending) cancelAutoContinue('superseded-by-prompt');
 
   const abortController = new AbortController();
   activeQuery = abortController;
   const startedAt = Date.now();
+
+  // Set if a 5-hour usage-limit rejection stops this run; drives auto-continue.
+  let limitHit = null;
+  let endedSuccessfully = false;
 
   // Show the user's message on other clients (sender rendered it locally; the
   // SDK persists it to the session store, so nothing to record ourselves).
@@ -716,14 +886,26 @@ async function runQuery(ws, state, { text, permissionMode, model, effort }) {
       // plan): prompt the user.
       return new Promise((resolve) => {
         const id = randomUUID();
-        send(ws, {
+        const req = {
           type: 'permission_request',
           id,
           toolName,
           input,
           title: options.title,
           description: options.description,
-        });
+        };
+        if (ws.readyState === 1) {
+          send(ws, req);
+        } else if (connections.size > 0) {
+          // Headless run (e.g. auto-continue): no originating socket, so ask
+          // whichever tab(s) are connected.
+          broadcast(req);
+        } else {
+          // Nobody is connected to approve — deny rather than hang the run.
+          log('INFO', `permission needed for ${toolName} but no client is connected — denying`);
+          resolve({ behavior: 'deny', message: 'No interactive client connected to approve this tool.' });
+          return;
+        }
         const finish = (allowed) => resolve(allowed
           ? { behavior: 'allow', updatedInput: input }
           : { behavior: 'deny', message: 'Denied by user' });
@@ -854,7 +1036,22 @@ async function runQuery(ws, state, { text, permissionMode, model, effort }) {
           }
         }
 
+      } else if (event.type === 'rate_limit_event') {
+        // Subscription usage-limit telemetry. `status: 'rejected'` on the 5-hour
+        // limit is the auto-continue trigger; warnings are surfaced but ignored.
+        const info = event.rate_limit_info || {};
+        vlog(`rate_limit: status=${info.status} type=${info.rateLimitType} ` +
+          `resetsAt=${info.resetsAt || 'n/a'} util=${info.utilization ?? 'n/a'}`);
+        broadcast({ type: 'rate_limit', status: info.status,
+          rateLimitType: info.rateLimitType, resetsAt: info.resetsAt,
+          utilization: info.utilization });
+        if (info.status === 'rejected' && info.rateLimitType === 'five_hour' && info.resetsAt) {
+          limitHit = { resetsAt: info.resetsAt, rateLimitType: info.rateLimitType };
+          log('WARN', `usage limit reached (five_hour); resets at ${new Date(info.resetsAt * 1000).toISOString()}`);
+        }
+
       } else if (event.type === 'result') {
+        if (event.subtype === 'success') endedSuccessfully = true;
         const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
         log('INFO', `result: ${event.subtype} in ${secs}s, ${event.num_turns} turns, ` +
           `$${(event.total_cost_usd || 0).toFixed(4)}`);
@@ -889,6 +1086,31 @@ async function runQuery(ws, state, { text, permissionMode, model, effort }) {
     }
     // Refresh the session list so the new/updated session (and its title) appears
     broadcast({ type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
+
+    // Auto-continue: if a 5-hour usage limit stopped this run (and the user
+    // didn't abort / it didn't otherwise succeed), schedule a resume for when
+    // the limit resets — subscription auth and the toggle permitting.
+    if (limitHit && !endedSuccessfully && !abortController.signal.aborted) {
+      if (autoContinue.enabled && isSubscriptionAuth()) {
+        const attempts = autoAttempts + 1;
+        if (attempts > AUTO_CONTINUE_MAX_ATTEMPTS) {
+          log('WARN', `auto-continue: still limited after ${AUTO_CONTINUE_MAX_ATTEMPTS} attempts — giving up`);
+          broadcast({ type: 'auto_continue_gaveup', attempts: AUTO_CONTINUE_MAX_ATTEMPTS });
+          autoContinue.pending = null; saveAutoContinue();
+        } else {
+          scheduleAutoContinue({
+            resetsAt: limitHit.resetsAt,
+            rateLimitType: limitHit.rateLimitType,
+            model: model || null,
+            effort: effort || null,
+            permissionMode: permissionMode || DEFAULT_PERMISSION_MODE,
+            attempts,
+          });
+        }
+      } else {
+        log('INFO', `usage limit hit; auto-continue ${autoContinue.enabled ? 'needs subscription auth' : 'is off'}`);
+      }
+    }
   }
 }
 
@@ -900,11 +1122,24 @@ function send(ws, data) {
 
 sanitizeMcpState();
 loadActive();
+loadAutoContinue();
+// Re-arm a resume scheduled before a restart (fires ~immediately if its reset
+// already elapsed while we were down); otherwise drop a now-ineligible pending.
+if (autoContinue.pending) {
+  if (autoContinue.enabled && isSubscriptionAuth() && activeSessionId &&
+      autoContinue.pending.attempts <= AUTO_CONTINUE_MAX_ATTEMPTS) {
+    scheduleAutoContinue(autoContinue.pending);
+  } else {
+    autoContinue.pending = null;
+    saveAutoContinue();
+  }
+}
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Claude Code UI listening on port ${PORT}`);
   console.log(`  Working dir: ${WORK_DIR}`);
   console.log(`  Plugin dir:  ${PLUGIN_DIR}`);
   console.log(`  /addon_configs access: ${ALLOW_ADDON_CONFIGS ? 'enabled' : 'blocked'}`);
+  console.log(`  Auto-continue on limit: ${autoContinue.enabled ? 'on' : 'off'} (${isSubscriptionAuth() ? 'subscription' : 'api-key'} auth)`);
   console.log(`  Verbose logging: ${VERBOSE_LOGGING ? 'on' : 'off'}`);
 });

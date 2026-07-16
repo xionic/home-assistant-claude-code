@@ -110,6 +110,19 @@ Selectable in the UI per-prompt; the **default for new chats** comes from the `d
 
 **Reasoning effort:** the Settings panel has an effort selector (Low→Max) sent as `effort` on the prompt; the server sets `opts.effort` only when a level is chosen (else the SDK model default, high). Higher effort means longer, quieter thinking — a common cause of the "chat looks stuck" perception.
 
+## Auto-Continue on Usage Limit
+
+When a **claude.ai subscription** hits its **5-hour** usage limit mid-run, the SDK emits a `rate_limit_event` with `status: 'rejected'`, `rateLimitType: 'five_hour'`, and a `resetsAt` epoch. If the **Auto-continue on limit** Settings toggle is on, the server persists that and resumes the conversation automatically once the limit resets. (This is a genuine, first-class SDK signal — not log-scraping.)
+
+- **Subscription-only.** Gated on `isSubscriptionAuth()` (`!ANTHROPIC_API_KEY && .credentials.json` present). API-key auth surfaces plain 429s with no reset time to schedule against, so the toggle is shown disabled. The `rate_limit_event` itself is only emitted for subscription users.
+- **5-hour only.** `seven_day`/`overage` rejections are broadcast (`rate_limit`) and logged but never auto-resumed — waiting out a week unattended is not the intent.
+- **State is server-owned**, persisted to `/data/auto-continue.json` as `{ enabled, pending }`. The toggle is *not* localStorage (the resume must fire with **no browser open**). `enabled` is the user toggle; `pending` is a scheduled resume `{ resetsAt, rateLimitType, model, effort, permissionMode, attempts }`.
+- **Survives restarts.** On boot, `loadAutoContinue()` + a re-arm block reschedule a saved `pending` (fires ~immediately if `resetsAt` already elapsed during downtime). `setTimeout`'s ~24.8-day ceiling covers a 5-hour wait.
+- **Loop safety.** `attempts` is capped at `AUTO_CONTINUE_MAX_ATTEMPTS` (3): if a resume is immediately re-limited it backs off and eventually gives up (`auto_continue_gaveup`).
+- **The resume** is a headless `runQuery` (a fake `{ readyState: 3 }` socket, shared `autoResumeState`) with a short "continue where you left off" prompt, reusing the interrupted run's model/effort/permission mode. If that run needs a **permission prompt** and clients are connected, `canUseTool` broadcasts it to any tab; if **no** client is connected it denies (rather than hanging) so the run ends cleanly. A manual prompt / new chat / session switch supersedes a pending resume (`cancelAutoContinue`).
+- **Wire protocol:** server→client `auto_continue_pending` (banner + countdown), `auto_continue_resuming`, `auto_continue_cancelled`, `auto_continue_gaveup`, `auto_continue_state`, plus raw `rate_limit`; client→server `set_auto_continue`, `cancel_auto_continue`. Connect `config` carries `autoContinue` + `autoContinueSupported`.
+- **Testing without a real limit:** `GET /diag/autocontinue?simulate=<seconds>` (debug option on) arms a resume that fires after N seconds against the active session, exercising the full schedule→resume path.
+
 ## Logging & the "chat hangs" symptom
 
 Reported symptom: a response stops coming, then resumes minutes later (not a true hang — usually long silent thinking, a slow tool, a retry/backoff, or auto-compaction). Instrumentation added for it:

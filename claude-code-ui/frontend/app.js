@@ -26,6 +26,12 @@ const settingsBtn    = document.getElementById('settings-btn');
 const settingsPanel  = document.getElementById('settings-panel');
 const modelSelect    = document.getElementById('model-select');
 const effortSelect   = document.getElementById('effort-select');
+const autoContinueToggle = document.getElementById('auto-continue-toggle');
+const autoContinueRow    = document.getElementById('auto-continue-row');
+const autoContinueHint   = document.getElementById('auto-continue-hint');
+const acBanner       = document.getElementById('auto-continue-banner');
+const acBannerText   = document.getElementById('ac-banner-text');
+const acBannerCancel = document.getElementById('ac-banner-cancel');
 const sessionsBtn    = document.getElementById('sessions-btn');
 const sessionsPanel  = document.getElementById('sessions-panel');
 const sessionsListEl = document.getElementById('sessions-list');
@@ -141,6 +147,10 @@ function handleServerMessage(msg) {
       if (!localStorage.getItem('permMode') && msg.defaultPermMode) {
         permModeSelect.value = msg.defaultPermMode;
       }
+      // Auto-continue state is server-owned (persisted in /data), so the server
+      // is the source of truth — just reflect it.
+      if (msg.autoContinue != null) autoContinueToggle.checked = !!msg.autoContinue;
+      setAutoContinueSupported(msg.autoContinueSupported !== false);
       break;
 
     case 'auth_status':
@@ -269,6 +279,40 @@ function handleServerMessage(msg) {
       endToolGroup();
       isRunning = false;
       updateSendBtn();
+      break;
+
+    case 'auto_continue_state':
+      autoContinueToggle.checked = !!msg.enabled;
+      if (msg.supported != null) setAutoContinueSupported(!!msg.supported);
+      if (!msg.enabled) hideAcBanner();
+      break;
+
+    case 'auto_continue_pending':
+      showAcBanner(msg.resetsAt, msg.rateLimitType, msg.attempts);
+      break;
+
+    case 'auto_continue_cancelled':
+      hideAcBanner();
+      break;
+
+    case 'auto_continue_resuming':
+      hideAcBanner();
+      appendInfoLine('⏳ Usage limit reset — continuing automatically…');
+      isRunning = true;
+      updateSendBtn();
+      showThinking();
+      break;
+
+    case 'auto_continue_gaveup':
+      hideAcBanner();
+      appendErrorBubble('Auto-continue stopped — still rate-limited after several attempts. Try again later.');
+      isRunning = false;
+      updateSendBtn();
+      break;
+
+    case 'rate_limit':
+      // Live utilization telemetry; the banner is driven by the pending/cancel
+      // messages, so nothing to render here for now.
       break;
   }
 }
@@ -468,6 +512,17 @@ function appendErrorBubble(message) {
   const div = document.createElement('div');
   div.className = 'error-bubble';
   div.textContent = message;
+  messagesEl.appendChild(div);
+  scrollBottom();
+}
+
+// A neutral, centered status line in the transcript (e.g. an auto-continue note).
+function appendInfoLine(text) {
+  endToolGroup();
+  lastAssistantBubble = null;
+  const div = document.createElement('div');
+  div.className = 'result-line';
+  div.textContent = text;
   messagesEl.appendChild(div);
   scrollBottom();
 }
@@ -1108,6 +1163,48 @@ modelSelect.onchange = () => { localStorage.setItem('model', modelSelect.value);
 // Reasoning effort — empty string means "let the SDK/model decide" (no override).
 effortSelect.value = localStorage.getItem('effort') || '';
 effortSelect.onchange = () => { localStorage.setItem('effort', effortSelect.value); };
+
+// Auto-continue on usage limit. State is owned by the server (persisted in /data
+// so a resume fires even with no browser open), so we don't cache it locally —
+// the 'config'/'auto_continue_state' messages drive the checkbox.
+function setAutoContinueSupported(supported) {
+  autoContinueRow.classList.toggle('disabled', !supported);
+  autoContinueToggle.disabled = !supported;
+  autoContinueHint.textContent = supported
+    ? 'Resume automatically when the 5-hour usage limit resets.'
+    : 'Only available when signed in with a Claude subscription (not an API key).';
+}
+autoContinueToggle.onchange = () => {
+  if (ws && isConnected) {
+    ws.send(JSON.stringify({ type: 'set_auto_continue', enabled: autoContinueToggle.checked }));
+  }
+};
+
+// The banner counts down to the scheduled resume and offers a Cancel.
+let acCountdownTimer = null;
+function showAcBanner(resetsAt, rateLimitType, attempts) {
+  if (acCountdownTimer) clearInterval(acCountdownTimer);
+  const render = () => {
+    const secs = Math.max(0, Math.round(resetsAt - Date.now() / 1000));
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    const rel = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+    const at = new Date(resetsAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    acBannerText.textContent = secs > 0
+      ? `Usage limit reached — auto-continuing at ${at} (in ${rel})`
+      : 'Usage limit reset — resuming…';
+  };
+  render();
+  acCountdownTimer = setInterval(render, 1000);
+  acBanner.classList.remove('hidden');
+}
+function hideAcBanner() {
+  if (acCountdownTimer) { clearInterval(acCountdownTimer); acCountdownTimer = null; }
+  acBanner.classList.add('hidden');
+}
+acBannerCancel.onclick = () => {
+  if (ws && isConnected) ws.send(JSON.stringify({ type: 'cancel_auto_continue' }));
+  hideAcBanner();
+};
 
 // Restore + persist the permission mode so it survives navigating away. The
 // add-on's default_permission_mode (sent as a 'config' message) fills in when

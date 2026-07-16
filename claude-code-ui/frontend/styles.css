@@ -122,6 +122,44 @@ body {
 }
 .settings-row label { font-size: 13px; color: var(--text-muted); }
 
+.settings-toggle {
+  appearance: none; -webkit-appearance: none;
+  width: 38px; height: 22px; flex: none;
+  border-radius: 999px; background: var(--surface); border: 1px solid var(--border);
+  position: relative; cursor: pointer; transition: background .15s;
+}
+.settings-toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text-muted); transition: transform .15s, background .15s;
+}
+.settings-toggle:checked { background: var(--user-border); border-color: var(--user-border); }
+.settings-toggle:checked::after { transform: translateX(16px); background: #fff; }
+.settings-row.disabled { opacity: .5; }
+.settings-row.disabled .settings-toggle { cursor: not-allowed; }
+
+.settings-hint {
+  margin: -4px 0 0; font-size: 11px; line-height: 1.4; color: var(--text-muted);
+}
+
+/* ── Auto-continue banner (countdown to a scheduled resume) ── */
+.ac-banner {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 12px 8px; padding: 9px 12px;
+  background: var(--tool-bg); border: 1px solid var(--tool-border);
+  border-radius: var(--radius-sm); font-size: 13px; color: var(--text);
+}
+.ac-banner.hidden { display: none; }
+.ac-banner-icon { flex: none; font-size: 15px; }
+.ac-banner-text { flex: 1 1 auto; }
+.ac-banner-cancel {
+  flex: none; cursor: pointer;
+  background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  padding: 4px 10px; font-size: 12px;
+}
+.ac-banner-cancel:hover { color: var(--text); border-color: var(--text-muted); }
+
 /* ── Sessions panel ── */
 .sessions-panel {
   position: absolute;
