@@ -8,6 +8,7 @@ configuration:
     name: Default permission mode
     description: >-
       Tool-permission mode applied to new chats — Ask (prompt for each tool),
+      Plan (research read-only and propose a plan before changing anything),
       Auto (a model decides), Accept edits (auto-approve file edits only), or
       Bypass (auto-approve everything). You can still change it per-chat in the app.
   ha_smart_context:

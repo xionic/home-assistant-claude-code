@@ -1,3 +1,6 @@
+## 1.5.2
+- Fixed: **Plan** can now be set as the default permission mode in the add-on options. It was offered in the app's dropdown but rejected by the options schema, so you could pick it per-chat but never default to it
+
 ## 1.5.1
 - Entity links now open **inside** Home Assistant instead of bouncing you out to a web page — clicking an entity opens its usual more-info dialog (a switch gets its toggle, a thermostat its controls, a sensor its history), and automations/dashboards navigate the app without a page reload
 
