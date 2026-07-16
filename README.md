@@ -7,17 +7,30 @@ browser, with direct access to your Home Assistant configuration and live state.
 It's a self-contained chat UI backed by the [Claude Agent SDK](https://docs.anthropic.com/en/api/agent-sdk),
 running inside HA and reachable from your phone through the HA app.
 
+Ask it to build an automation, explain why the heating fired at 3am, or tidy up a
+dashboard — it reads your real config and entities, and every tool call is yours
+to approve.
+
+|              Chat              |            Permissions             |           Settings            |
+| :----------------------------: | :--------------------------------: | :---------------------------: |
+| ![Chat](docs/images/chat.png)  | ![Permissions](docs/images/permission.png) | ![Settings](docs/images/settings.png) |
+| Entity names link into HA      | Approve once, or always            | Model, effort, auto-continue  |
+
+<sub>Screenshots use invented demo entities, not a real home.</sub>
+
 ## Features
 
 - 📱 **Mobile-first chat UI** — clean vanilla-JS interface (no build step), works well in the HA Android/iOS app
+- 🔗 **Links into Home Assistant** — entity names in replies are clickable: tap one to open its normal more-info dialog (a switch gets its toggle, a thermostat its controls, a sensor its history); automations open their editor. Opens in-place, without leaving the app
 - 💬 **Multi-session** — browse, resume, and delete past conversations. Built directly on Claude Code's own on-disk session store (`~/.claude/projects`), so sessions are interchangeable with the Claude CLI
-- 🔎 **Find in chat** — header search button, `/find`, or Ctrl/Cmd+F, with match count, next/previous, and highlighting
-- ⌨️ **Slash commands** with autocomplete — `/new`, `/clear`, `/usage`, `/resume`, `/find`, plus any plugin commands
+- 🔐 **Permission modes** — Ask / Plan / Auto (model classifier) / Accept edits / Bypass, switchable mid-response. On a prompt, **Always** stops it asking again for that kind of call
 - 🧠 **HA-aware context** — auto-loads your HA version, entities, add-ons, and recent errors into Claude's context each session
-- 🔧 **Live HA tools** — `ha-ws-client` (states, service calls, templates, history/stats/logbook, registry) and `ha-lovelace` (dashboard get/list/save) talk to HA over the Supervisor connection, authenticated automatically with `$SUPERVISOR_TOKEN` — **no token setup required**
-- 🔐 **Permission modes** — Ask / Auto (model classifier) / Accept edits / Bypass; your choice persists
-- 🤖 **Model selection** — switch between Opus / Sonnet / Haiku; the UI shows the model actually in use
-- ⏳ **Live feedback** — a "working" indicator while Claude runs and a stop button to interrupt
+- 🔧 **Live HA tools** — `ha-ws-client` (states, service calls, templates, registry), `ha-history` / `ha-stats` (date-range history & statistics), and `ha-lovelace` (create / list / get / save / delete dashboards), all authenticated automatically with `$SUPERVISOR_TOKEN` — **no token setup required**
+- 🤖 **Model & effort** — switch between Opus / Sonnet / Haiku and trade speed for depth (Low → Max)
+- ⏳ **Live feedback** — a working indicator with elapsed seconds, a stop button, message timestamps, and a real context-usage meter showing progress toward auto-compaction
+- ♻️ **Auto-continue on usage limit** *(optional)* — if a subscription 5-hour limit interrupts a response, resume automatically when it resets. Survives an add-on/HA restart
+- 🔎 **Find in chat** — header search, `/find`, or Ctrl/Cmd+F, with match count and highlighting
+- ⌨️ **Slash commands** with autocomplete — `/new`, `/clear`, `/usage`, `/resume`, `/find`, `/help`, plus Claude's own (e.g. `/compact`) and any plugin commands
 - 🔒 **HA ingress auth** — protected by Home Assistant; no separate login. Claude credentials (subscription or API key) persist across restarts
 - 🏗️ **Multi-arch** — aarch64 and amd64
 
@@ -33,38 +46,40 @@ running inside HA and reachable from your phone through the HA app.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `anthropic_api_key` | `""` | Optional. Use an API key instead of signing in with a Claude subscription |
-| `ha_token` | `""` | Optional long-lived token. Only needed if you enable `ha-mcp`; not required for normal use |
-| `ha_smart_context` | `true` | Generate a `CLAUDE.md` with HA system info that Claude loads each session |
-| `allow_addon_configs` | `false` | Let Claude read/edit other add-ons' config folders under `/addon_configs`. Off by default; while off, tool calls touching that path are blocked |
-| `verbose_logging` | `false` | Write detailed per-event logs to the add-on log for diagnosing hangs. Milestone logs (query start/end, compaction, stalls, errors) are always recorded |
-| `enable_ha_mcp` | `false` | Optional `ha-mcp` MCP server. **Off by default** — `ha-ws-client`/`ha-lovelace` are used instead (see below) |
-| `bypass_permissions` | `false` | Default the session to auto-approving tools |
-| `debug` | `false` | Expose read-only `/diag` diagnostic endpoints on the internal port |
-| `persistent_apk_packages` | `[]` | Alpine packages to install on each startup |
-| `persistent_pip_packages` | `[]` | Python packages to install on each startup |
+| `default_permission_mode` | `ask` | Permission mode for new chats — `ask`, `auto`, `acceptEdits`, or `bypass`. You can still change it per-chat |
+| `ha_smart_context` | `true` | Generate a context file each session (HA version, entity summary, add-ons, recent errors, tool reference) so Claude understands your setup |
+| `allow_addon_configs` | `false` | Let Claude read/edit **other add-ons'** config folders under `/addon_configs`. While off, any tool call touching that path is blocked |
+| `verbose_logging` | `false` | Per-event logs (each text chunk, tool call, result, context usage) in the add-on log, for diagnosing a chat that seems to hang. Milestone logs — query start/end, compaction, stalls, errors — are always recorded |
+| `debug` | `false` | **Dangerous.** Exposes unauthenticated `/diag` endpoints on the add-on network, including one that runs arbitrary prompts with tools auto-approved. Local debugging only |
 
 ## How Claude talks to Home Assistant
 
-Claude uses two pre-installed CLI tools (via Bash) plus the Supervisor REST API,
-all authenticated automatically with `$SUPERVISOR_TOKEN`:
+Claude uses pre-installed CLI tools (via Bash) plus the Supervisor REST API, all
+authenticated automatically with `$SUPERVISOR_TOKEN`:
 
-- **`ha-ws-client`** — entity states, service calls, Jinja templates, history / statistics / logbook, and registry search over the HA WebSocket API.
-- **`ha-lovelace`** — Lovelace dashboard `list` / `get` / `save` over the WebSocket API (the REST `/api/lovelace/*` endpoints don't exist on modern HA).
+- **`ha-ws-client`** — entity states, service calls, Jinja templates, and registry search over the HA WebSocket API.
+- **`ha-history`** / **`ha-stats`** — history and long-term statistics over a date range (`--days`, `--from`, `--to`).
+- **`ha-lovelace`** — Lovelace dashboards: `create`, `list`, `get`, `save`, `delete` over the WebSocket API (the REST `/api/lovelace/*` endpoints don't exist on modern HA).
 - **YAML editing** — Claude can read and edit your `/config` files directly.
 
-`ha-mcp` is disabled by default: its WebSocket auth was unreliable with the
-add-on token, and MCP tool calls bypass the permission UI. The CLI tools above
-run as normal Bash calls, so they authenticate cleanly **and** respect your
-chosen permission mode.
+These run as ordinary Bash calls, so they authenticate cleanly **and** respect
+your chosen permission mode. There is no MCP server: an earlier `ha-mcp`
+experiment was removed because its WebSocket auth was unreliable with the add-on
+token and MCP tool calls bypassed the permission UI.
+
+**Safety:** Claude is instructed never to edit `/config/.storage/*` or the
+recorder database without asking first — those bypass HA's validation and corrupt
+easily.
 
 ## Architecture
 
 ```
 browser  ⇄  WebSocket  ⇄  server/index.js  (Node + @anthropic-ai/claude-agent-sdk)
-                                 ├── ha-ws-client            (HA WebSocket API)
-                                 ├── ha-lovelace             (dashboards)
+                                 ├── ha-ws-client                  (HA WebSocket API)
+                                 ├── ha-history / ha-stats         (date-range history & stats)
+                                 ├── ha-lovelace                   (dashboards)
                                  ├── plugins/homeassistant-config  (skill + YAML validation hook)
-                                 └── Claude Code session store  (~/.claude/projects/*.jsonl)
+                                 └── Claude Code session store     (~/.claude/projects/*.jsonl)
 
 HA Supervisor → Ingress proxy → port 7681 → chat UI
 ```
