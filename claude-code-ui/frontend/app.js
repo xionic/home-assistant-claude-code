@@ -363,9 +363,53 @@ function appendUserBubble(text, ts) {
 let haEntities = new Set();
 let haAutomationIds = {};
 
+// HA names its top window "ha-main-window" precisely so ingress iframes can find
+// it (this mirrors the frontend's own src/common/dom/get_main_window.ts). Falls
+// back to `top`, and to null if it's unreachable (cross-origin / standalone).
+const HA_MAIN_WINDOW_NAME = 'ha-main-window';
+function haMainWindow() {
+  try {
+    if (window.name === HA_MAIN_WINDOW_NAME) return window;
+    if (window.parent && window.parent.name === HA_MAIN_WINDOW_NAME) return window.parent;
+    return window.top || null;
+  } catch { return null; }   // cross-origin — we're not inside HA
+}
+
+// Same shape as the frontend's fireEvent (bubbles + composed).
+function haFire(target, type, detail) {
+  target.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+}
+
+// Open the entity's more-info dialog — exactly what clicking the entity anywhere
+// in HA does, so each domain gets its usual controls (a switch gets its toggle,
+// climate gets the thermostat, a sensor gets its history chart). It's a dialog,
+// so nothing navigates: we stay inside the app/frontend.
+function openMoreInfo(entityId) {
+  const w = haMainWindow();
+  if (!w) return false;
+  try {
+    const root = w.document.querySelector('home-assistant');
+    if (!root) return false;
+    haFire(root, 'hass-more-info', { entityId });
+    return true;
+  } catch { return false; }
+}
+
+// SPA-navigate the HA frontend, the way HA's own navigate() does — no page load,
+// no handing the URL to an external browser.
+function haNavigate(path) {
+  const w = haMainWindow();
+  if (!w) return false;
+  try {
+    w.history.pushState(null, '', path);
+    haFire(w, 'location-changed', { replace: false });
+    return true;
+  } catch { return false; }
+}
+
+// Fallback URL, used for middle-click/copy-link and if we can't reach the HA
+// frontend to open a dialog.
 function haEntityUrl(id) {
-  // Automations get their editor (what you actually want for "the automation
-  // I just made"); everything else gets the History panel for that entity.
   if (id.startsWith('automation.') && haAutomationIds[id]) {
     return `/config/automation/edit/${encodeURIComponent(haAutomationIds[id])}`;
   }
@@ -374,14 +418,23 @@ function haEntityUrl(id) {
 
 function mkEntityLink(id) {
   const a = document.createElement('a');
+  const isAutomation = id.startsWith('automation.') && haAutomationIds[id];
   a.className = 'ha-entity-link';
-  a.href = haEntityUrl(id);
+  a.href = haEntityUrl(id);       // real href: middle-click/copy still work
   a.target = '_top';
   a.rel = 'noopener';
   a.textContent = id;
-  a.title = id.startsWith('automation.') && haAutomationIds[id]
-    ? `Open automation "${id}" in Home Assistant`
-    : `Open ${id} in Home Assistant`;
+  a.title = isAutomation ? `Edit automation ${id}` : `Open ${id} in Home Assistant`;
+  a.addEventListener('click', (e) => {
+    // Leave modified clicks (new tab/window) to the browser.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    // An automation you just made is most useful in its editor; everything else
+    // opens its more-info dialog.
+    const handled = isAutomation
+      ? haNavigate(`/config/automation/edit/${encodeURIComponent(haAutomationIds[id])}`)
+      : openMoreInfo(id);
+    if (handled) e.preventDefault();   // otherwise fall through to the href
+  });
   return a;
 }
 
@@ -423,13 +476,24 @@ function linkifyEntities(root) {
   }
 }
 
-// Any link Claude writes itself (e.g. to a dashboard) must also escape the
-// iframe; external links open in a new tab instead.
+// Links Claude writes itself (e.g. to a dashboard). Internal ones SPA-navigate
+// the HA frontend so they open in the app rather than being handed to a browser;
+// external ones open in a new tab.
 function fixAnchorTargets(root) {
   for (const a of root.querySelectorAll('a[href]')) {
+    if (a.classList.contains('ha-entity-link')) continue;   // already wired
     const href = a.getAttribute('href') || '';
-    if (/^https?:\/\//i.test(href)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
-    else if (href.startsWith('/')) { a.target = '_top'; a.rel = 'noopener'; }
+    if (/^https?:\/\//i.test(href)) {
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+    } else if (href.startsWith('/')) {
+      a.target = '_top';
+      a.rel = 'noopener';
+      a.addEventListener('click', (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        if (haNavigate(href)) e.preventDefault();
+      });
+    }
   }
 }
 
