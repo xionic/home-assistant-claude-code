@@ -1,6 +1,6 @@
 build_from:
-  aarch64: ghcr.io/home-assistant/aarch64-base:3.21
-  amd64: ghcr.io/home-assistant/amd64-base:3.21
+  aarch64: ghcr.io/home-assistant/aarch64-base-debian:bookworm
+  amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
 labels:
   org.opencontainers.image.title: "HA AI Assistant"
   org.opencontainers.image.description: "AI coding assistant with Home Assistant integration and mobile-friendly chat UI."

@@ -15,6 +15,17 @@ const CLAUDE_CONFIG_DIR = process.env.ANTHROPIC_CONFIG_DIR || '/data/.config/cla
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
 
+// Optional ESPHome capability. When enabled we load an extra local plugin (the
+// esphome skill) and exempt the ESPHome add-on's config folder from the
+// addon-configs guard so the esphome CLI can work on it.
+const ENABLE_ESPHOME = process.env.ENABLE_ESPHOME === 'true';
+const ESPHOME_CONFIG_DIR = process.env.ESPHOME_CONFIG_DIR || '';
+const ESPHOME_PLUGIN_DIR = '/opt/plugins/esphome';
+
+// Plugins loaded for every query (the HA-config plugin always; esphome opt-in).
+const PLUGINS = [{ type: 'local', path: PLUGIN_DIR }];
+if (ENABLE_ESPHOME) PLUGINS.push({ type: 'local', path: ESPHOME_PLUGIN_DIR });
+
 // Whether the agent may touch other add-ons' config folders. HA always mounts
 // `all_addon_configs` at /addon_configs (folder maps are static), so this flag
 // — set from the `allow_addon_configs` add-on option — is what actually gates
@@ -77,9 +88,19 @@ function vlog(msg) {
 // path in the serialized tool input catches Read/Edit/Write (file_path),
 // Glob/Grep (path) and Bash (command) uniformly; nothing under /addon_configs is
 // reachable from the /config cwd without naming that absolute path.
+// When ESPHome is enabled, its config folder under /addon_configs is a legitimate
+// target even if broad addon-configs access is off — but only that folder. Allow
+// a tool call whose /addon_configs references are all within the ESPHome dir.
+function touchesOnlyEsphome(blob) {
+  if (!ENABLE_ESPHOME || !ESPHOME_CONFIG_DIR) return false;
+  const refs = blob.match(/\/addon_configs\/[^"'\s)]+/g) || [];
+  return refs.length > 0 && refs.every((r) => r === ESPHOME_CONFIG_DIR || r.startsWith(ESPHOME_CONFIG_DIR + '/'));
+}
+
 function addonConfigsDenyHook(input) {
   const blob = JSON.stringify(input?.tool_input ?? '');
   if (!blob.includes(ADDON_CONFIGS_PATH)) return { continue: true };
+  if (touchesOnlyEsphome(blob)) return { continue: true };
   return {
     continue: true,
     hookSpecificOutput: {
@@ -210,7 +231,7 @@ if (DEBUG_MODE) app.get('/diag/query', async (req, res) => {
   const opts = {
     cwd: WORK_DIR,
     abortController,
-    plugins: [{ type: 'local', path: PLUGIN_DIR }],
+    plugins: PLUGINS,
     // Auto-approve every tool (bypassPermissions is refused when running as root).
     canUseTool: (_t, input) => Promise.resolve({ behavior: 'allow', updatedInput: input }),
     // Required: tells the subprocess to use request_user_dialog for AskUserQuestion.
@@ -900,7 +921,7 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
   const opts = {
     cwd: WORK_DIR,
     abortController,
-    plugins: [{ type: 'local', path: PLUGIN_DIR }],
+    plugins: PLUGINS,
   };
 
   // Block /addon_configs access unless the add-on option enables it.
@@ -1215,6 +1236,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Working dir: ${WORK_DIR}`);
   console.log(`  Plugin dir:  ${PLUGIN_DIR}`);
   console.log(`  /addon_configs access: ${ALLOW_ADDON_CONFIGS ? 'enabled' : 'blocked'}`);
+  console.log(`  ESPHome capability: ${ENABLE_ESPHOME ? `on (${ESPHOME_CONFIG_DIR || 'no config dir'})` : 'off'}`);
   console.log(`  Auto-continue on limit: ${autoContinue.enabled ? 'on' : 'off'} (${isSubscriptionAuth() ? 'subscription' : 'api-key'} auth)`);
   console.log(`  Verbose logging: ${VERBOSE_LOGGING ? 'on' : 'off'}`);
 });

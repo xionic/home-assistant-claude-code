@@ -1,3 +1,7 @@
+## 1.6.0
+- **ESPHome support** (new `enable_esphome` option, off by default): bundles the ESPHome CLI so Claude can validate, compile, OTA-flash, and stream device logs for boards you manage with the ESPHome add-on — working directly on that add-on's config folder. Ships as an opt-in capability module (its own skill + the `esphome` tool); the toolchain installs in the background on first enable, and compilers download on the first build
+- The add-on now runs on a **Debian base** (was Alpine) — required so the ESPHome/PlatformIO compilers can run. No user-visible change beyond that
+
 ## 1.5.2
 - Fixed: **Plan** can now be set as the default permission mode in the add-on options. It was offered in the app's dropdown but rejected by the options schema, so you could pick it per-chat but never default to it
 

@@ -24,6 +24,15 @@ configuration:
       add-ons (mounted at /addon_configs). Off by default; while off, any tool
       call touching /addon_configs is blocked. Turn on only if you want help
       configuring other add-ons — their configs may contain secrets.
+  enable_esphome:
+    name: ESPHome support
+    description: >-
+      Bundle the ESPHome CLI so Claude can validate, compile, flash (OTA), and
+      stream device logs for boards you manage with the ESPHome add-on. Off by
+      default. The first time you enable it, the toolchain installs in the
+      background (a few minutes; watch the add-on log), then the compilers
+      download on the first build. Works on the config folder of your installed
+      ESPHome add-on.
   verbose_logging:
     name: Verbose logging
     description: >-

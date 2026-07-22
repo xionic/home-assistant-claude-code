@@ -25,6 +25,7 @@ to approve.
 - 💬 **Multi-session** — browse, resume, and delete past conversations. Built directly on Claude Code's own on-disk session store (`~/.claude/projects`), so sessions are interchangeable with the Claude CLI
 - 🔐 **Permission modes** — Ask / Plan / Auto (model classifier) / Accept edits / Bypass, switchable mid-response. On a prompt, **Always** stops it asking again for that kind of call
 - 🧠 **HA-aware context** — auto-loads your HA version, entities, add-ons, and recent errors into Claude's context each session
+- 🔌 **ESPHome support** *(optional)* — turn on `enable_esphome` and Claude can validate, compile, OTA-flash, and stream logs for your ESPHome devices, working on your ESPHome add-on's config folder
 - 🔧 **Live HA tools** — `ha-ws-client` (states, service calls, templates, registry), `ha-history` / `ha-stats` (date-range history & statistics), and `ha-lovelace` (create / list / get / save / delete dashboards), all authenticated automatically with `$SUPERVISOR_TOKEN` — **no token setup required**
 - 🤖 **Model & effort** — switch between Opus / Sonnet / Haiku and trade speed for depth (Low → Max)
 - ⏳ **Live feedback** — a working indicator with elapsed seconds, a stop button, message timestamps, and a real context-usage meter showing progress toward auto-compaction
@@ -49,6 +50,7 @@ to approve.
 | `default_permission_mode` | `ask` | Permission mode for new chats — `ask`, `auto`, `acceptEdits`, or `bypass`. You can still change it per-chat |
 | `ha_smart_context` | `true` | Generate a context file each session (HA version, entity summary, add-ons, recent errors, tool reference) so Claude understands your setup |
 | `allow_addon_configs` | `false` | Let Claude read/edit **other add-ons'** config folders under `/addon_configs`. While off, any tool call touching that path is blocked |
+| `enable_esphome` | `false` | Bundle the ESPHome CLI so Claude can validate / compile / OTA-flash / stream logs for devices you manage with the ESPHome add-on. First enable installs the toolchain in the background (a few minutes) |
 | `verbose_logging` | `false` | Per-event logs (each text chunk, tool call, result, context usage) in the add-on log, for diagnosing a chat that seems to hang. Milestone logs — query start/end, compaction, stalls, errors — are always recorded |
 | `debug` | `false` | **Dangerous.** Exposes unauthenticated `/diag` endpoints on the add-on network, including one that runs arbitrary prompts with tools auto-approved. Local debugging only |
 

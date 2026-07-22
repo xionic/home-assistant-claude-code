@@ -347,6 +347,30 @@ before editing.
 ADDONCFG
     fi
 
+    # ESPHome capability — only advertised when enabled, so Claude doesn't reach
+    # for a CLI that isn't installed.
+    if [ "${ENABLE_ESPHOME:-false}" = "true" ]; then
+        cat >> "$tmp_file" << ESPHOMEMD
+
+## ESPHome (\`enable_esphome\` is on)
+
+The \`esphome\` CLI is available. Device YAML lives in \`${ESPHOME_CONFIG_DIR:-the ESPHome add-on config folder}\`
+(also in \`\$ESPHOME_CONFIG_DIR\`). Validate → compile → flash → debug:
+
+\`\`\`bash
+esphome config  "\$ESPHOME_CONFIG_DIR/<device>.yaml"   # validate (do this first)
+esphome compile "\$ESPHOME_CONFIG_DIR/<device>.yaml"   # build firmware
+esphome upload  "\$ESPHOME_CONFIG_DIR/<device>.yaml"   # OTA flash (confirm with the user first)
+esphome logs    "\$ESPHOME_CONFIG_DIR/<device>.yaml"   # stream device logs to debug
+\`\`\`
+
+Always validate before compiling/flashing; confirm before you flash real hardware;
+never print \`secrets.yaml\` values. See the **esphome** skill for the full workflow.
+If \`esphome\` reports it isn't installed, first-time background setup is still
+running — tell the user to wait a few minutes, don't try to install it yourself.
+ESPHOMEMD
+    fi
+
     chmod 644 "$tmp_file"
     mv "$tmp_file" "$OUTPUT_FILE"
 }

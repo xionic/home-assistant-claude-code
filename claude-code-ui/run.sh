@@ -116,6 +116,51 @@ CLAUDEMD
 # (ha-mcp is configured directly in the Node server via mcpServers option)
 
 # ---------------------------------------------------------------------------
+# ESPHome capability (optional) — detect the installed ESPHome add-on, expose
+# its config folder, and lazily install the esphome CLI into /data on first use.
+# ---------------------------------------------------------------------------
+setup_esphome() {
+    export ENABLE_ESPHOME
+    export ESPHOME_CONFIG_DIR=""
+    ENABLE_ESPHOME=$(bashio::config 'enable_esphome' 'false')
+
+    if [ "$ENABLE_ESPHOME" != "true" ]; then
+        return 0
+    fi
+
+    # Locate the ESPHome device YAML. The ESPHome "Device Builder" add-on keeps
+    # its configs in /config/esphome (the HA config dir we already map) — the
+    # common case, and directly accessible with no /addon_configs involved. Some
+    # setups instead use the shared /addon_configs/<slug> folder; fall back to
+    # that (found via the add-on whose slug ends in _esphome), which relies on
+    # allow_addon_configs / the guard exemption.
+    # `|| true` so a failed supervisor call can't trip `set -e` and abort startup.
+    local slug
+    slug=$(curl -s -m 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        http://supervisor/addons 2>/dev/null \
+        | jq -r '[.data.addons[] | select(.slug|endswith("_esphome"))][0].slug // empty' 2>/dev/null || true)
+
+    if [ -d /config/esphome ]; then
+        ESPHOME_CONFIG_DIR="/config/esphome"
+        bashio::log.info "ESPHome enabled — configs at ${ESPHOME_CONFIG_DIR}"
+    elif [ -n "$slug" ] && [ -d "/addon_configs/${slug}" ]; then
+        ESPHOME_CONFIG_DIR="/addon_configs/${slug}"
+        bashio::log.info "ESPHome enabled — configs at ${ESPHOME_CONFIG_DIR} (add-on: ${slug})"
+    else
+        bashio::log.warning "ESPHome enabled but no config folder found (looked in /config/esphome and /addon_configs) — the esphome CLI still works on paths you give it"
+    fi
+
+    # Install the toolchain in the background (first enable only) so the UI is up
+    # immediately. The esphome wrapper reports "still installing" until it's ready.
+    if [ -f /data/esphome/.installed ] && [ -x /data/esphome/venv/bin/esphome ]; then
+        bashio::log.info "ESPHome CLI ready (cached at /data/esphome/venv)"
+    else
+        bashio::log.info "ESPHome CLI not yet installed — starting background setup (a few minutes)…"
+        ( /opt/scripts/esphome-setup.sh >/dev/null 2>&1 & )
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Start the Node.js server
 # ---------------------------------------------------------------------------
 start_server() {
@@ -152,6 +197,10 @@ start_server() {
         bashio::log.info "Verbose logging enabled — per-event query logs will appear here"
     fi
 
+    if [ "$ENABLE_ESPHOME" = "true" ]; then
+        bashio::log.info "ESPHome capability enabled — CONFIG_DIR=${ESPHOME_CONFIG_DIR:-<none>}"
+    fi
+
     cd /config
     exec node /opt/server/index.js
 }
@@ -170,6 +219,7 @@ main() {
     ALLOW_ADDON_CONFIGS=$(bashio::config 'allow_addon_configs' 'false')
 
     init_environment
+    setup_esphome
     generate_ha_context
     start_server
 }
