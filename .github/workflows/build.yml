@@ -1,0 +1,97 @@
+name: Build add-on image
+
+# Builds and publishes a multi-arch prebuilt image to GHCR so users who install
+# from the repository don't have to build the (Debian + Node SDK + …) image on
+# their own hardware. The image is tagged with the add-on version from
+# config.yaml, plus `latest`. Runs on pushes that touch the add-on, and manually.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "claude-code-ui/**"
+  workflow_dispatch:
+
+env:
+  ARCHITECTURES: '["amd64", "aarch64"]'
+  IMAGE_NAME: claude-code-ui
+  BUILDER_VERSION: "2026.06.0"
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Read add-on version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          VERSION=$(grep '^version:' claude-code-ui/config.yaml | head -1 | cut -d'"' -f2)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Add-on version: ${VERSION}"
+
+  init:
+    name: Prepare build matrix
+    needs: version
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ghcr.io/${{ github.repository_owner }}
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: [version, init]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.init.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push ${{ matrix.arch }} image
+        uses: home-assistant/builder/actions/build-image@2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          context: claude-code-ui
+          image: ${{ matrix.image }}
+          version: ${{ needs.version.outputs.version }}
+          image-tags: |
+            ${{ needs.version.outputs.version }}
+            latest
+          # The new builder doesn't read build.yaml, so pass the add-on base image.
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base-debian:bookworm
+          push: "true"
+          cosign: "false"
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [version, init, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Publish manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.06.0
+        with:
+          architectures: ${{ env.ARCHITECTURES }}
+          image-name: ${{ env.IMAGE_NAME }}
+          registry-prefix: ghcr.io/${{ github.repository_owner }}
+          image-tags: |
+            ${{ needs.version.outputs.version }}
+            latest
+          cosign: "false"
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}

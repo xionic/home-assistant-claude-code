@@ -29,6 +29,13 @@ browser  ←→  WebSocket  ←→  server/index.js  ←→  @anthropic-ai/claud
 # Copy to add-on directory on HA host
 scp -P 222 -r claude-code-ui/ root@192.168.1.10:/addons/
 
+# IMPORTANT: strip the `image:` key from the LOCAL copy so the Supervisor builds
+# from the Dockerfile. config.yaml ships `image:` for STORE installs (prebuilt
+# image), but with it present `need_build` is false (ATTR_IMAGE not in data) and
+# `ha apps rebuild` errors (AppRebuildImageBasedError) / `update` pulls the
+# published image instead of your local changes.
+ssh -p 222 root@192.168.1.10 "sed -i '/^image:/d' /addons/claude-code-ui/config.yaml"
+
 # Same version — rebuild
 ssh -p 222 root@192.168.1.10 "ha apps rebuild local_claude-code-ui"
 
@@ -39,6 +46,19 @@ ssh -p 222 root@192.168.1.10 "ha apps update local_claude-code-ui"
 SSH key: `~/.ssh/ha_claude`. Host: `192.168.1.10:222`. User: `root` (HA SSH add-on default).
 
 To bust Docker layer cache for shell script changes, bump `ARG SCRIPTS_VER` in the Dockerfile.
+
+## Prebuilt images (CI)
+
+`.github/workflows/build.yml` builds a multi-arch image with the Home Assistant
+`builder` composite actions (`prepare-multi-arch-matrix` → `build-image` →
+`publish-multi-arch-manifest`, pinned to `2026.06.0`) and pushes it to
+`ghcr.io/xionic/claude-code-ui:<version>` + `:latest` on pushes touching
+`claude-code-ui/**` (and via workflow_dispatch). The new builder does **not** read
+`build.yaml`, so the workflow passes `BUILD_FROM` per arch. Store installs pull
+this image (via the `image:` key in config.yaml); local dev builds from source
+after the `sed` strip above. **One-time GHCR setup:** after the first successful
+run, set the `claude-code-ui` package visibility to **public** so users can pull
+anonymously.
 
 ## Environment
 

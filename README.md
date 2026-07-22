@@ -11,6 +11,8 @@ Ask it to build an automation, explain why the heating fired at 3am, or tidy up 
 dashboard — it reads your real config and entities, and every tool call is yours
 to approve.
 
+[![Add repository to your Home Assistant instance.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fxionic%2Fhome-assistant-claude-code)
+
 |              Chat              |            Permissions             |           Settings            |
 | :----------------------------: | :--------------------------------: | :---------------------------: |
 | ![Chat](docs/images/chat.png)  | ![Permissions](docs/images/permission.png) | ![Settings](docs/images/settings.png) |
@@ -33,13 +35,16 @@ to approve.
 - 🔎 **Find in chat** — header search, `/find`, or Ctrl/Cmd+F, with match count and highlighting
 - ⌨️ **Slash commands** with autocomplete — `/new`, `/clear`, `/usage`, `/resume`, `/find`, `/help`, plus Claude's own (e.g. `/compact`) and any plugin commands
 - 🔒 **HA ingress auth** — protected by Home Assistant; no separate login. Claude credentials (subscription or API key) persist across restarts
-- 🏗️ **Multi-arch** — aarch64 and amd64
+- 🏗️ **Multi-arch** — aarch64 and amd64, installed from a **prebuilt image** (no building on your Pi)
 
 ## Installation
 
+Click the badge above to add the repository to your Home Assistant in one step, then
+install **Claude Code UI** from the store — or do it manually:
+
 1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**
 2. Three-dot menu → **Repositories** → add `https://github.com/xionic/home-assistant-claude-code`
-3. Find **Claude Code UI** in the store and install it
+3. Find **Claude Code UI** in the store and install it (it pulls a prebuilt image, so there's no long local build)
 4. Start it, open the UI, and sign in with your Anthropic account (or set an API key in the options)
 
 ## Configuration
