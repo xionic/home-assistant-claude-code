@@ -1515,16 +1515,36 @@ const SCROLL_STICK_PX = 80;   // within this many px of the bottom counts as "at
 // keeps the header pinned on large screens.
 const headerEl = document.querySelector('.header');
 let lastScrollTop = 0;
+let headerLockTimer = null;
+
+// Toggling the header changes the messages viewport height, which makes the
+// browser re-clamp scrollTop and fire more scroll events — near the bottom that
+// feeds back and oscillates the header. So after each toggle we ignore scroll
+// events until the collapse/expand animation settles, then re-baseline.
+function setHeaderHidden(hidden) {
+  if (headerEl.classList.contains('header-hidden') === hidden) return;
+  headerEl.classList.toggle('header-hidden', hidden);
+  if (headerLockTimer) clearTimeout(headerLockTimer);
+  headerLockTimer = setTimeout(() => {
+    headerLockTimer = null;
+    lastScrollTop = messagesEl.scrollTop;
+  }, 350);
+}
 
 messagesEl.addEventListener('scroll', () => {
   const st = messagesEl.scrollTop;
   const dist = messagesEl.scrollHeight - st - messagesEl.clientHeight;
   stickToBottom = dist <= SCROLL_STICK_PX;
 
+  // Auto-hide is a small-screen affordance; CSS pins the header on wide screens.
+  if (window.innerWidth >= 700) { lastScrollTop = st; return; }
+  if (headerLockTimer) return;   // let a toggle settle before reacting again
+
   const delta = st - lastScrollTop;
-  if (st < 40) headerEl.classList.remove('header-hidden');        // near the top → always show
-  else if (delta > 6) headerEl.classList.add('header-hidden');    // scrolling down → hide
-  else if (delta < -6) headerEl.classList.remove('header-hidden'); // scrolling up → reveal
+  if (st < 40) setHeaderHidden(false);            // near the top → always show
+  else if (dist < 90) { /* near the bottom → leave as-is (avoids clamp feedback) */ }
+  else if (delta > 10) setHeaderHidden(true);     // clear downward move → hide
+  else if (delta < -10) setHeaderHidden(false);   // clear upward move → reveal
   lastScrollTop = st;
 });
 

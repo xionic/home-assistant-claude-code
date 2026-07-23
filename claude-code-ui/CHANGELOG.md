@@ -1,3 +1,6 @@
+## 1.7.2
+- Fixed the mobile header jittering up and down when scrolling near the bottom of a long chat
+
 ## 1.7.1
 - Add-on option descriptions trimmed to one or two sentences
 
