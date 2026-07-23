@@ -1,3 +1,6 @@
+## 1.7.1
+- Add-on option descriptions trimmed to one or two sentences
+
 ## 1.7.0
 - **Fixed a host-crash risk from ESPHome builds:** ESPHome/PlatformIO write multi-GB, tens-of-thousands-of-files build caches under `/data`, which the nightly backup was tarring — the tiny-file IO storm starved the host watchdog and hard-reset the Pi. Those caches are now **excluded from backups** (`backup_exclude`), and compiles run at **idle CPU/IO priority** (`nice`/`ionice`) so a build can't starve the host. Caches still persist under `/data` for fast rebuilds
 - **Copy button on code blocks and tool output** — hover (or tap on mobile) any code block or tool result to copy it

@@ -2,47 +2,36 @@ configuration:
   anthropic_api_key:
     name: Anthropic API key
     description: >-
-      Optional. If set, the assistant authenticates with this API key instead of
-      the interactive browser login. Leave blank to log in from the chat UI.
+      Optional — authenticate with an API key instead of the browser login. Leave
+      blank to sign in from the chat UI.
   default_permission_mode:
     name: Default permission mode
     description: >-
-      Tool-permission mode applied to new chats — Ask (prompt for each tool),
-      Plan (research read-only and propose a plan before changing anything),
-      Auto (a model decides), Accept edits (auto-approve file edits only), or
-      Bypass (auto-approve everything). You can still change it per-chat in the app.
+      How tool use is approved in new chats (Ask, Plan, Auto, Accept edits, or
+      Bypass). You can still change it per-chat.
   ha_smart_context:
     name: Home Assistant smart context
     description: >-
-      Generate a context file each session (system info, an entity-count summary,
-      installed add-ons, recent errors, and the HA tool reference) so the
-      assistant understands your setup. Recommended on.
+      Load your HA system info, entities, add-ons, and recent errors into Claude's
+      context each session. Recommended on.
   allow_addon_configs:
     name: Allow access to other add-on configs
     description: >-
-      Let the assistant read and edit the configuration folders of your other
-      add-ons (mounted at /addon_configs). Off by default; while off, any tool
-      call touching /addon_configs is blocked. Turn on only if you want help
-      configuring other add-ons — their configs may contain secrets.
+      Let Claude read and edit other add-ons' config folders under
+      /addon_configs. Off by default; those configs may contain secrets.
   enable_esphome:
     name: ESPHome support
     description: >-
-      Bundle the ESPHome CLI so Claude can validate, compile, flash (OTA), and
-      stream device logs for boards you manage with the ESPHome add-on. Off by
-      default. The first time you enable it, the toolchain installs in the
-      background (a few minutes; watch the add-on log), then the compilers
-      download on the first build. Works on the config folder of your installed
-      ESPHome add-on.
+      Bundle the ESPHome CLI so Claude can validate, compile, flash, and log your
+      ESPHome devices. First enable installs the toolchain in the background (a few
+      minutes).
   verbose_logging:
     name: Verbose logging
     description: >-
-      Write detailed per-event logs (each text chunk, tool call, tool result,
-      and context-window usage) to the add-on log. Useful for diagnosing a chat
-      that seems to hang. Off by default to keep the log readable; milestone
-      logs (query start/end, compaction, stalls, errors) are always recorded.
+      Write detailed per-event logs to the add-on log for diagnosing a chat that
+      seems to hang. Milestone logs are always recorded.
   debug:
     name: Debug mode (dangerous)
     description: >-
-      DANGEROUS — exposes unauthenticated /diag endpoints on the add-on network,
-      including one that runs arbitrary assistant prompts with tools auto-approved
-      (remote prompt injection). Enable only for local debugging, then turn it off.
+      DANGEROUS — exposes unauthenticated /diag endpoints (including one that runs
+      arbitrary prompts with tools auto-approved). Local debugging only.
