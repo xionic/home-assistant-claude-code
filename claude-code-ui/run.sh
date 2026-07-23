@@ -150,14 +150,11 @@ setup_esphome() {
         bashio::log.warning "ESPHome enabled but no config folder found (looked in /config/esphome and /addon_configs) — the esphome CLI still works on paths you give it"
     fi
 
-    # Install the toolchain in the background (first enable only) so the UI is up
-    # immediately. The esphome wrapper reports "still installing" until it's ready.
-    if [ -f /data/esphome/.installed ] && [ -x /data/esphome/venv/bin/esphome ]; then
-        bashio::log.info "ESPHome CLI ready (cached at /data/esphome/venv)"
-    else
-        bashio::log.info "ESPHome CLI not yet installed — starting background setup (a few minutes)…"
-        ( /opt/scripts/esphome-setup.sh >/dev/null 2>&1 & )
-    fi
+    # Ensure the toolchain in the background so the UI is up immediately. Runs on
+    # every start (idempotent, cheap when ready): it reinstalls the apt build deps
+    # if an upgrade wiped them, and installs the ESPHome venv on first enable.
+    bashio::log.info "Ensuring ESPHome toolchain in the background — see /data/esphome/setup.log"
+    ( /opt/scripts/esphome-setup.sh >/dev/null 2>&1 & )
 }
 
 # ---------------------------------------------------------------------------

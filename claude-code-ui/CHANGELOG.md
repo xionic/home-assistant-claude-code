@@ -1,3 +1,6 @@
+## 1.8.0
+- ESPHome build dependencies (patch, compilers, etc.) now install automatically when ESPHome is enabled and reinstall after add-on upgrades, so compiles keep working without manual apt installs
+
 ## 1.7.2
 - Fixed the mobile header jittering up and down when scrolling near the bottom of a long chat
 

@@ -55,6 +55,10 @@ esphome logs     <device>.yaml     # stream the device's live logs over its API/
 5. **If `esphome` says it isn't installed,** the background install hasn't
    finished (or the option is off). Tell the user to check the add-on log / wait a
    few minutes — don't try to install it yourself.
+6. **After an add-on upgrade,** the system build tools (patch, compilers) reinstall
+   automatically on start (in the background). If a compile fails on a missing
+   system tool right after an upgrade, wait a minute and retry — don't apt-install
+   by hand (it'd just be wiped by the next upgrade).
 
 ## Editing YAML
 
