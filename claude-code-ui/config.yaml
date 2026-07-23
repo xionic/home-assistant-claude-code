@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "1.6.0"
+version: "1.7.0"
 slug: "claude-code-ui"
 # Prebuilt multi-arch image published by CI (.github/workflows/build.yml). Store
 # installs pull this instead of building locally. NOTE: local dev installs must
@@ -22,6 +22,20 @@ hassio_role: manager
 map:
   - config:rw
   - all_addon_configs:rw
+# Keep multi-GB, tens-of-thousands-of-files build caches out of add-on backups.
+# When ESPHome compiles, ESP-IDF/PlatformIO write GBs of small files under /data;
+# including them in the nightly backup caused a tiny-file IO storm that starved
+# the host watchdog and hard-reset the Pi. All excluded paths are reproducible
+# (rebuilt on the next compile / esphome reinstall).
+backup_exclude:
+  - ".cache"
+  - ".cache/**"
+  - "esphome/.platformio"
+  - "esphome/.platformio/**"
+  - "esphome/venv"
+  - "esphome/venv/**"
+  - ".local/share/uv"
+  - ".local/share/uv/**"
 options:
   anthropic_api_key: ""
   default_permission_mode: ask

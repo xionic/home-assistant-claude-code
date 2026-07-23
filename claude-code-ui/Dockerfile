@@ -66,7 +66,7 @@ WORKDIR /config
 
 # Copy application files
 # (bump SCRIPTS_VER to force Docker layer re-copy on next build)
-ARG SCRIPTS_VER=14
+ARG SCRIPTS_VER=15
 COPY server/index.js /opt/server/index.js
 COPY frontend/ /opt/frontend/
 COPY plugins/ /opt/plugins/
@@ -94,7 +94,11 @@ RUN printf '%s\n' \
     'ESPHOME_BIN=/data/esphome/venv/bin/esphome' \
     'if [ -x "$ESPHOME_BIN" ]; then' \
     '  export PLATFORMIO_CORE_DIR="${PLATFORMIO_CORE_DIR:-/data/esphome/.platformio}"' \
-    '  exec "$ESPHOME_BIN" "$@"' \
+    '  # Run compiles at idle CPU/IO priority so a build can never starve PID 1 /' \
+    '  # the host watchdog or contend with a backup. ionice is optional (util-linux).' \
+    '  NICE="nice -n 19"' \
+    '  command -v ionice >/dev/null 2>&1 && NICE="$NICE ionice -c 3"' \
+    '  exec $NICE "$ESPHOME_BIN" "$@"' \
     'fi' \
     'echo "ESPHome is not installed. Turn on \"enable_esphome\" in the add-on options;" >&2' \
     'echo "first-time setup installs it in the background (a few minutes) — watch the add-on log." >&2' \

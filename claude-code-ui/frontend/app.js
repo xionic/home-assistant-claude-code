@@ -501,6 +501,49 @@ function renderMarkdown(el, raw) {
   el.innerHTML = marked.parse(raw);
   linkifyEntities(el);
   fixAnchorTargets(el);
+  el.querySelectorAll('pre').forEach(addCopyButton);
+}
+
+// Copy text to the clipboard, with a fallback for non-secure contexts (the HA
+// app / ingress isn't always a secure origin, where navigator.clipboard is
+// undefined). Returns a promise resolving to true on success.
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(() => true, () => false);
+  }
+  return new Promise((resolve) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    resolve(ok);
+  });
+}
+
+// Add a small "Copy" button to a <pre> block. Captures the code text *before*
+// inserting the button so the button's own label can't leak into the copy.
+function addCopyButton(pre) {
+  if (pre.querySelector(':scope > .copy-btn')) return;
+  const codeEl = pre.querySelector('code');
+  const text = (codeEl || pre).textContent;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'copy-btn';
+  btn.textContent = 'Copy';
+  btn.title = 'Copy to clipboard';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    copyText(text).then((ok) => {
+      btn.textContent = ok ? 'Copied' : 'Failed';
+      btn.classList.toggle('copied', ok);
+      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+    });
+  });
+  pre.appendChild(btn);
 }
 
 // Re-render assistant bubbles from their stored markdown once link targets
@@ -561,6 +604,7 @@ function appendToolUse(id, name, input) {
     const raw = JSON.stringify(input, null, 2);
     pre.textContent = raw.length > 600 ? raw.slice(0, 600) + '\n…' : raw;
     body.appendChild(pre);
+    addCopyButton(pre);
   }
 
   el.append(header, body);
@@ -627,12 +671,14 @@ function appendToolResult(id, output, isError) {
     resultEl.className = 'tool-call-result' + (isError ? ' result-error' : '');
     resultEl.textContent = truncated;
     body.appendChild(resultEl);
+    addCopyButton(resultEl);
   } else {
     const div = document.createElement('div');
     div.className = 'tool-result' + (isError ? ' tool-result-error' : '');
     const pre = document.createElement('pre');
     pre.textContent = truncated;
     div.appendChild(pre);
+    addCopyButton(pre);
     messagesEl.appendChild(div);
     scrollBottom();
   }
@@ -1463,9 +1509,23 @@ function setStatus(state) {
 let stickToBottom = true;
 const SCROLL_STICK_PX = 80;   // within this many px of the bottom counts as "at bottom"
 
+// Auto-hide the header on small screens: collapse it when scrolling down through
+// a long chat (to reclaim space), slide it back in on any upward scroll (so the
+// user doesn't have to scroll all the way to the top to reach settings). CSS
+// keeps the header pinned on large screens.
+const headerEl = document.querySelector('.header');
+let lastScrollTop = 0;
+
 messagesEl.addEventListener('scroll', () => {
-  const dist = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+  const st = messagesEl.scrollTop;
+  const dist = messagesEl.scrollHeight - st - messagesEl.clientHeight;
   stickToBottom = dist <= SCROLL_STICK_PX;
+
+  const delta = st - lastScrollTop;
+  if (st < 40) headerEl.classList.remove('header-hidden');        // near the top → always show
+  else if (delta > 6) headerEl.classList.add('header-hidden');    // scrolling down → hide
+  else if (delta < -6) headerEl.classList.remove('header-hidden'); // scrolling up → reveal
+  lastScrollTop = st;
 });
 
 function scrollBottom(force) {
