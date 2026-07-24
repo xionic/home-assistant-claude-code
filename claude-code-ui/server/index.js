@@ -1,5 +1,5 @@
 import { createServer } from 'http';
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync } from 'fs';
 import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
@@ -140,6 +140,45 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 app.use(express.static('/opt/frontend'));
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+// Files the user attaches are written here and referenced by absolute path in the
+// prompt; Claude reads them with the Read tool (which sees images/PDFs natively).
+// Also served read-only so the UI can show thumbnails.
+const UPLOAD_DIR = '/data/uploads';
+try { mkdirSync(UPLOAD_DIR, { recursive: true }); } catch {}
+app.use('/uploads', express.static(UPLOAD_DIR));
+
+// Persist base64 attachments to disk, returning their absolute paths + web URLs.
+function saveAttachments(attachments) {
+  const out = [];
+  if (!Array.isArray(attachments)) return out;
+  for (const a of attachments) {
+    if (!a || !a.data) continue;
+    try {
+      const safe = (a.name || 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80) || 'file';
+      const fname = `${Date.now()}-${randomUUID().slice(0, 8)}-${safe}`;
+      const b64 = String(a.data).replace(/^data:[^;]+;base64,/, '');
+      const buf = Buffer.from(b64, 'base64');
+      writeFileSync(path.join(UPLOAD_DIR, fname), buf);
+      out.push({ path: path.join(UPLOAD_DIR, fname), url: `uploads/${fname}`,
+        name: a.name || fname, mediaType: a.mediaType || '', isImage: /^image\//.test(a.mediaType || '') });
+      log('INFO', `attachment saved: ${fname} (${a.mediaType || '?'}, ${Math.round(buf.length / 1024)} KB)`);
+    } catch (e) { log('WARN', `attachment save failed: ${e.message}`); }
+  }
+  return out;
+}
+
+// Bound growth: drop uploads older than a week on startup.
+function cleanupUploads(maxAgeMs = 7 * 24 * 3600 * 1000) {
+  try {
+    const now = Date.now();
+    for (const f of readdirSync(UPLOAD_DIR)) {
+      const p = path.join(UPLOAD_DIR, f);
+      try { if (now - statSync(p).mtimeMs > maxAgeMs) unlinkSync(p); } catch {}
+    }
+  } catch {}
+}
 
 // ── Diagnostics ───────────────────────────────────────────────────────────
 // Read-only auth/connectivity probe, only registered when the `debug` add-on
@@ -842,6 +881,19 @@ wss.on('connection', (ws) => {
       }
 
     } else if (msg.type === 'prompt') {
+      // Attachments: write them to disk and reference the paths in the prompt so
+      // Claude reads them (Read handles images/PDFs/text). The client already
+      // rendered thumbnails from the local files, so nothing extra is echoed.
+      if (Array.isArray(msg.attachments) && msg.attachments.length) {
+        const saved = saveAttachments(msg.attachments);
+        if (saved.length) {
+          const list = saved.map((s) => `- ${s.path}`).join('\n');
+          msg.text = (msg.text ? msg.text.trim() + '\n\n' : '') +
+            `[The user attached ${saved.length} file${saved.length > 1 ? 's' : ''}. ` +
+            `Use the Read tool to view ${saved.length > 1 ? 'them' : 'it'}:\n${list}]`;
+        }
+      }
+      delete msg.attachments;   // don't carry the base64 payload any further
       runQuery(ws, state, msg);
     } else if (msg.type === 'abort') {
       abortActive();
@@ -1269,6 +1321,7 @@ function send(ws, data) {
 sanitizeMcpState();
 loadActive();
 loadAutoContinue();
+cleanupUploads();   // drop attachments older than a week
 refreshHaLinks();   // populate entity/automation link targets at startup
 // Re-arm a resume scheduled before a restart (fires ~immediately if its reset
 // already elapsed while we were down); otherwise drop a now-ineligible pending.

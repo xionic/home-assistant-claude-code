@@ -57,6 +57,108 @@ const dialogSubmit   = document.getElementById('dialog-submit');
 const dialogCancel   = document.getElementById('dialog-cancel');
 
 const cmdMenu = document.getElementById('cmd-menu');
+const attachInput   = document.getElementById('attach-input');
+const attachBtn     = document.getElementById('attach-btn');
+const attachPreview = document.getElementById('attach-preview');
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+// Files/photos the user attaches to the next prompt. Each: { file, name,
+// mediaType, isImage, url } where url is an object URL used only for the preview.
+let attachments = [];
+const MAX_ATTACH_BYTES = 25 * 1024 * 1024;   // ~25 MB total, keeps the WS message sane
+
+function addFiles(fileList) {
+  let total = attachments.reduce((n, a) => n + a.file.size, 0);
+  for (const file of fileList || []) {
+    if (!file || file.size === 0) continue;
+    if (total + file.size > MAX_ATTACH_BYTES) {
+      appendErrorBubble(`"${file.name}" skipped — attachments are limited to ~25 MB total.`);
+      continue;
+    }
+    total += file.size;
+    const isImage = /^image\//.test(file.type);
+    attachments.push({ file, name: file.name || 'file', mediaType: file.type,
+      isImage, url: isImage ? URL.createObjectURL(file) : null });
+  }
+  renderAttachments();
+  updateSendBtn();
+}
+
+function removeAttachment(i) {
+  const a = attachments[i];
+  if (a && a.url) URL.revokeObjectURL(a.url);
+  attachments.splice(i, 1);
+  renderAttachments();
+  updateSendBtn();
+}
+
+function clearAttachments() {
+  for (const a of attachments) if (a.url) URL.revokeObjectURL(a.url);
+  attachments = [];
+  renderAttachments();
+}
+
+function renderAttachments() {
+  attachPreview.innerHTML = '';
+  if (!attachments.length) { attachPreview.classList.add('hidden'); return; }
+  attachments.forEach((a, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip' + (a.isImage ? ' attach-chip-img' : '');
+    if (a.isImage) {
+      const img = document.createElement('img');
+      img.src = a.url; img.alt = a.name;
+      chip.appendChild(img);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'attach-chip-name';
+      label.textContent = a.name;
+      chip.appendChild(label);
+    }
+    const rm = document.createElement('button');
+    rm.type = 'button'; rm.className = 'attach-chip-remove'; rm.textContent = '✕';
+    rm.title = 'Remove'; rm.onclick = () => removeAttachment(i);
+    chip.appendChild(rm);
+    attachPreview.appendChild(chip);
+  });
+  attachPreview.classList.remove('hidden');
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+attachBtn.onclick = () => attachInput.click();
+attachInput.onchange = () => { addFiles(attachInput.files); attachInput.value = ''; };
+
+// Paste an image (e.g. a screenshot) straight into the prompt.
+promptInput.addEventListener('paste', (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  const files = [];
+  for (const it of items) if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
+
+// Drag-and-drop files onto the composer.
+['dragenter', 'dragover'].forEach((ev) => inputForm.addEventListener(ev, (e) => {
+  if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+    e.preventDefault(); inputForm.classList.add('dragover');
+  }
+}));
+['dragleave', 'dragend'].forEach((ev) => inputForm.addEventListener(ev, (e) => {
+  if (e.target === inputForm) inputForm.classList.remove('dragover');
+}));
+inputForm.addEventListener('drop', (e) => {
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    e.preventDefault(); addFiles(e.dataTransfer.files);
+  }
+  inputForm.classList.remove('dragover');
+});
 
 // Track tool call elements (id → div) and last assistant bubble for accumulation
 const toolCallEls = new Map();
@@ -376,11 +478,33 @@ function addTime(bubble, ts) {
   bubble.appendChild(t);
 }
 
-function appendUserBubble(text, ts) {
+function appendUserBubble(text, ts, atts) {
   lastAssistantBubble = null;
   endToolGroup();
   const div = mkBubble('user');
-  div.querySelector('.bubble-content').textContent = text;
+  const content = div.querySelector('.bubble-content');
+  // Attachment thumbnails/chips (live send only) above the text.
+  if (atts && atts.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-attachments';
+    for (const a of atts) {
+      if (a.isImage && a.dataUrl) {
+        const img = document.createElement('img');
+        img.className = 'bubble-attach-img'; img.src = a.dataUrl; img.alt = a.name;
+        wrap.appendChild(img);
+      } else {
+        const chip = document.createElement('span');
+        chip.className = 'bubble-attach-file'; chip.textContent = '📎 ' + a.name;
+        wrap.appendChild(chip);
+      }
+    }
+    content.appendChild(wrap);
+  }
+  if (text) {
+    const t = document.createElement('div');
+    t.textContent = text;
+    content.appendChild(t);
+  }
   addTime(div, ts);
   messagesEl.appendChild(div);
   scrollBottom();
@@ -1127,14 +1251,15 @@ sendBtn.onclick = (e) => {
   }
 };
 
-inputForm.onsubmit = (e) => {
+inputForm.onsubmit = async (e) => {
   e.preventDefault();
   hideCmdMenu();
   const text = promptInput.value.trim();
-  if (!text || !isConnected) return;
+  const hasAtt = attachments.length > 0;
+  if ((!text && !hasAtt) || !isConnected) return;
 
-  // UI slash command? handle locally, never send to Claude.
-  const ui = UI_COMMANDS.find((c) => '/' + c.name === text);
+  // UI slash command? handle locally (only when there's no attachment).
+  const ui = !hasAtt && UI_COMMANDS.find((c) => '/' + c.name === text);
   if (ui) {
     runUiCommand(ui.name);
     promptInput.value = '';
@@ -1146,10 +1271,28 @@ inputForm.onsubmit = (e) => {
 
   if (isRunning) return;
 
-  appendUserBubble(text);
+  // Read the attachments to base64 for upload + the message bubble thumbnails.
+  const pending = attachments.slice();
+  let payload = [];
+  let bubbleAtts = [];
+  if (pending.length) {
+    try {
+      for (const a of pending) {
+        const dataUrl = await readFileAsDataURL(a.file);
+        payload.push({ name: a.name, mediaType: a.mediaType, data: dataUrl });
+        bubbleAtts.push({ name: a.name, isImage: a.isImage, dataUrl });
+      }
+    } catch (err) {
+      appendErrorBubble('Could not read an attachment: ' + (err && err.message || err));
+      return;
+    }
+  }
+
+  appendUserBubble(text, undefined, bubbleAtts);
   scrollBottom(true);   // sending a prompt re-pins to the bottom
   promptInput.value = '';
   localStorage.removeItem('draft');
+  clearAttachments();
   resizeTextarea();
   isRunning = true;
   usage.messages++;
@@ -1158,10 +1301,10 @@ inputForm.onsubmit = (e) => {
 
   // Only send a model override if the user explicitly picked one; otherwise let
   // the SDK use its default (which it reports back via the 'model' event).
-  // Plugin/agent commands (e.g. /ha-find-duplicates) pass straight through.
   ws.send(JSON.stringify({
     type: 'prompt',
     text,
+    attachments: payload.length ? payload : undefined,
     permissionMode: permModeSelect.value,
     model: localStorage.getItem('model') || undefined,
     effort: localStorage.getItem('effort') || undefined,
@@ -1521,7 +1664,7 @@ function updateSendBtn() {
     sendBtn.setAttribute('aria-label', 'Stop');
     sendBtn.classList.add('stop');
   } else {
-    sendBtn.disabled = !promptInput.value.trim() || !isConnected;
+    sendBtn.disabled = (!promptInput.value.trim() && !attachments.length) || !isConnected;
     sendBtn.innerHTML = SEND_ICON;
     sendBtn.setAttribute('aria-label', 'Send');
     sendBtn.classList.remove('stop');

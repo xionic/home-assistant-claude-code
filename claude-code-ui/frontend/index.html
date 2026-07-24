@@ -160,7 +160,15 @@
 
     <form id="input-form" class="input-form">
       <div id="cmd-menu" class="cmd-menu hidden"></div>
+      <input type="file" id="attach-input" class="hidden-file" multiple
+        accept="image/*,application/pdf,text/*,.yaml,.yml,.json,.log,.csv,.md,.py,.js,.ts,.sh,.conf,.ini">
+      <button type="button" id="attach-btn" class="attach-btn" title="Attach files or photos" aria-label="Attach">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+        </svg>
+      </button>
       <div class="prompt-wrap">
+        <div id="attach-preview" class="attach-preview hidden"></div>
         <div id="ctx-tokens" class="ctx-tokens hidden"></div>
         <textarea
           id="prompt-input"

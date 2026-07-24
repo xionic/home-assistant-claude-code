@@ -1,3 +1,6 @@
+## 1.9.0
+- **Attach images, photos, and files** to a message — via the paperclip button, pasting a screenshot, or drag-and-drop. Claude reads them (it sees images/PDFs and reads text/code). On mobile the picker offers the camera and photo library
+
 ## 1.8.3
 - Fixed: after re-authenticating in a long chat, typing "continue" started a new empty session instead of resuming — an auth failure no longer discards the current session
 

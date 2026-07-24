@@ -740,6 +740,46 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 .ctx-tokens.ctx-warn   { color: #d9a94a; opacity: 1; }
 .ctx-tokens.ctx-danger { color: var(--error-text); font-weight: 600; }
 
+/* ── Attachments ── */
+.hidden-file { display: none; }
+.attach-btn {
+  flex-shrink: 0; width: 40px; height: 40px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text-muted); border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.attach-btn:hover { color: var(--text); border-color: #555; }
+
+.attach-preview { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 2px 8px; }
+.attach-preview.hidden { display: none; }
+.attach-chip {
+  position: relative; display: flex; align-items: center;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-xs); max-width: 180px;
+}
+.attach-chip-img { width: 46px; height: 46px; overflow: hidden; }
+.attach-chip-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-chip-name {
+  font-size: 12px; color: var(--text); padding: 5px 22px 5px 9px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.attach-chip-remove {
+  position: absolute; top: -7px; right: -7px;
+  width: 18px; height: 18px; border-radius: 50%; padding: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 10px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.attach-chip-remove:hover { color: var(--text); }
+
+.input-form.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
+
+/* Attachments inside a sent user bubble */
+.bubble-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.bubble-attach-img { max-width: 160px; max-height: 160px; border-radius: var(--radius-xs); display: block; }
+.bubble-attach-file { font-size: 12px; color: var(--text); background: rgba(255,255,255,.08); border-radius: var(--radius-xs); padding: 3px 8px; }
+
 .prompt-input {
   background: var(--surface-2);
   border: 1px solid var(--border);
