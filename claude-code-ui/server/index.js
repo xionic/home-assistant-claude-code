@@ -447,9 +447,27 @@ function sanitizeMcpState() {
 
 // ── Auth helpers ────────────────────────────────────────────────────────────
 
+// Set when a query fails for an auth reason (e.g. the OAuth token expired). The
+// credentials file still exists in that case, so isAuthenticated() alone would
+// keep hiding the login screen — this flag lets the UI show a re-auth prompt and
+// persists it across reconnects until a successful login/query clears it.
+let credentialsExpired = false;
+
 function isAuthenticated() {
   if (process.env.ANTHROPIC_API_KEY) return true;
   return existsSync(path.join(CLAUDE_CONFIG_DIR, '.credentials.json'));
+}
+
+// Does a query error look like an authentication failure (vs a normal error)?
+function isAuthError(msg) {
+  const m = (msg || '').toLowerCase();
+  return m.includes('oauth')
+    || m.includes('unauthorized') || m.includes(' 401') || m.includes('401 ')
+    || m.includes('authentication_error') || m.includes('invalid api key')
+    || m.includes('invalid bearer') || m.includes('/login') || m.includes('please run')
+    || m.includes('re-authenticate') || m.includes('reauthenticate')
+    || (m.includes('token') && m.includes('expired'))
+    || (m.includes('credential') && (m.includes('expired') || m.includes('invalid')));
 }
 
 // Subscription (claude.ai sign-in) vs API-key auth. Auto-continue only applies to
@@ -506,6 +524,7 @@ function startLoginFlow(notifyAll) {
     loginProc = null;
     if (isAuthenticated()) {
       stopLoginProc();
+      credentialsExpired = false;
       notifyAll({ type: 'auth_status', authenticated: true });
     }
   });
@@ -516,6 +535,7 @@ function startPolling(notifyAll) {
   loginPollInterval = setInterval(() => {
     if (isAuthenticated()) {
       stopLoginProc();
+      credentialsExpired = false;
       notifyAll({ type: 'auth_status', authenticated: true });
     }
   }, 2000);
@@ -773,7 +793,8 @@ wss.on('connection', (ws) => {
   send(ws, { type: 'connected' });
   send(ws, { type: 'config', defaultPermMode: DEFAULT_PERMISSION_MODE,
     autoContinue: autoContinue.enabled, autoContinueSupported: isSubscriptionAuth() });
-  send(ws, { type: 'auth_status', authenticated: isAuthenticated() });
+  send(ws, { type: 'auth_status', authenticated: isAuthenticated() && !credentialsExpired });
+  if (credentialsExpired) send(ws, { type: 'auth_expired', subscription: isSubscriptionAuth() });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
   // Link targets so the client can turn entity ids in replies into HA links
   send(ws, { type: 'ha_links', entities: haLinks.entities, automations: haLinks.automations });
@@ -1142,6 +1163,7 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
 
       } else if (event.type === 'result') {
         if (event.subtype === 'success') endedSuccessfully = true;
+        if (credentialsExpired) { credentialsExpired = false; broadcast({ type: 'auth_status', authenticated: true }); }
         const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
         log('INFO', `result: ${event.subtype} in ${secs}s, ${event.num_turns} turns, ` +
           `$${(event.total_cost_usd || 0).toFixed(4)}`);
@@ -1165,6 +1187,11 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
       // A stale resume id (e.g. after the SDK session expired) — drop it so the
       // next prompt starts a fresh session.
       if (resuming) { activeSessionId = null; saveActive(); }
+      if (isAuthError(message)) {
+        credentialsExpired = true;
+        log('WARN', 'query failed on authentication — prompting re-login');
+        broadcast({ type: 'auth_expired', subscription: isSubscriptionAuth() });
+      }
       broadcast({ type: 'error', message });
     }
   } finally {

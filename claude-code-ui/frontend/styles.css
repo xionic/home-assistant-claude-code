@@ -793,6 +793,7 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 .login-desc { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
 
 .login-action-btn { width: 100%; padding: 11px 22px; font-size: 15px; }
+.login-action-btn.hidden { display: none; }
 
 .login-url-section {
   width: 100%;

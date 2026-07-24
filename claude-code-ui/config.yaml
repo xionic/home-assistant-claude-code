@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "1.8.0"
+version: "1.8.1"
 slug: "claude-code-ui"
 # Prebuilt multi-arch image published by CI (.github/workflows/build.yml). Store
 # installs pull this instead of building locally. NOTE: local dev installs must

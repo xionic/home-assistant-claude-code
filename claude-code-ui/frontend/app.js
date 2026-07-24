@@ -110,16 +110,38 @@ function connect() {
   ws.onmessage = (e) => handleServerMessage(JSON.parse(e.data));
 }
 
+const loginTitle = document.getElementById('login-title');
+const loginDesc  = document.getElementById('login-desc');
+
 function setAuthenticated(authenticated) {
   if (authenticated) {
     loginScreen.classList.add('hidden');
   } else {
     loginScreen.classList.remove('hidden');
+    // Default (first-time / signed-out) copy; showReauth() overrides for expiry.
+    loginTitle.textContent = 'Connect to Anthropic';
+    loginDesc.textContent = 'Sign in to your Anthropic account to use Claude.';
+    loginBtn.classList.remove('hidden');
     loginUrlSect.classList.add('hidden');
     loginCodeForm.classList.add('hidden');
     loginWaiting.classList.add('hidden');
     loginBtn.disabled = false;
     loginBtn.textContent = 'Sign in with Anthropic';
+  }
+}
+
+// Credentials expired (or were rejected) mid-use — surface the login screen with
+// a re-auth message so there's a clear button to sign in again.
+function showReauth(subscription) {
+  setAuthenticated(false);
+  if (subscription === false) {
+    // API-key auth: a device-flow login won't help, so point at the option.
+    loginTitle.textContent = 'Authentication failed';
+    loginDesc.textContent = 'Your Anthropic API key was rejected — check it in the add-on options.';
+    loginBtn.classList.add('hidden');
+  } else {
+    loginTitle.textContent = 'Session expired';
+    loginDesc.textContent = 'Your Claude sign-in has expired. Sign in again to continue.';
   }
 }
 
@@ -157,6 +179,10 @@ function handleServerMessage(msg) {
 
     case 'auth_status':
       setAuthenticated(msg.authenticated);
+      break;
+
+    case 'auth_expired':
+      showReauth(msg.subscription);
       break;
 
     case 'slash_commands':

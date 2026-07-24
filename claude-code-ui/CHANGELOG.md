@@ -1,3 +1,6 @@
+## 1.8.1
+- When your Claude sign-in expires, the chat now shows a "Session expired" screen with a Sign-in button to re-authenticate, instead of just failing with an error
+
 ## 1.8.0
 - ESPHome build dependencies (patch, compilers, etc.) now install automatically when ESPHome is enabled and reinstall after add-on upgrades, so compiles keep working without manual apt installs
 
