@@ -67,19 +67,32 @@ const attachPreview = document.getElementById('attach-preview');
 let attachments = [];
 const MAX_ATTACH_BYTES = 25 * 1024 * 1024;   // ~25 MB total, keeps the WS message sane
 
+function looksLikeImage(file) {
+  return /^image\//.test(file.type || '') ||
+    /\.(png|jpe?g|gif|webp|heic|heif|bmp|avif)$/i.test(file.name || '');
+}
+
 function addFiles(fileList) {
-  let total = attachments.reduce((n, a) => n + a.file.size, 0);
-  for (const file of fileList || []) {
-    if (!file || file.size === 0) continue;
-    if (total + file.size > MAX_ATTACH_BYTES) {
-      appendErrorBubble(`"${file.name}" skipped — attachments are limited to ~25 MB total.`);
-      continue;
-    }
-    total += file.size;
-    const isImage = /^image\//.test(file.type);
-    attachments.push({ file, name: file.name || 'file', mediaType: file.type,
-      isImage, url: isImage ? URL.createObjectURL(file) : null });
+  // Array.from (not for..of) so it works even if the webview's FileList isn't
+  // iterable, and don't skip size===0 — some mobile pickers report 0 for
+  // multi-selected photos that still read fine, so skipping them lost everything.
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  let total = attachments.reduce((n, a) => n + (a.file.size || 0), 0);
+  let added = 0, skipped = 0;
+  for (const file of files) {
+    if (!file) continue;
+    const size = file.size || 0;
+    if (size && total + size > MAX_ATTACH_BYTES) { skipped++; continue; }
+    total += size;
+    const isImage = looksLikeImage(file);
+    let url = null;
+    try { if (isImage) url = URL.createObjectURL(file); } catch {}
+    attachments.push({ file, name: file.name || 'file', mediaType: file.type || '', isImage, url });
+    added++;
   }
+  if (skipped) appendErrorBubble(`${skipped} file${skipped > 1 ? 's' : ''} skipped — attachments are limited to ~25 MB total (images are shrunk automatically).`);
+  if (!added && !skipped) appendErrorBubble('Could not attach the selected file(s).');
   renderAttachments();
   updateSendBtn();
 }
@@ -129,6 +142,36 @@ function readFileAsDataURL(file) {
     r.onload = () => resolve(r.result);
     r.onerror = () => reject(r.error);
     r.readAsDataURL(file);
+  });
+}
+
+// Images are downscaled to ~1568px (Claude's effective max useful edge) and
+// re-encoded as JPEG before sending: this shrinks the payload dramatically (so
+// several photos fit), and normalizes formats like HEIC to something Claude
+// reads. Non-images (and anything that won't decode) are read as-is.
+const MAX_IMG_DIM = 1568;
+function fileToDataURL(file, isImage) {
+  if (!isImage) return readFileAsDataURL(file);
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, MAX_IMG_DIM / Math.max(img.width, img.height) || 1);
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      } catch {
+        URL.revokeObjectURL(url);
+        readFileAsDataURL(file).then(resolve, () => resolve(null));
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); readFileAsDataURL(file).then(resolve, () => resolve(null)); };
+    img.src = url;
   });
 }
 
@@ -1275,18 +1318,20 @@ inputForm.onsubmit = async (e) => {
   const pending = attachments.slice();
   let payload = [];
   let bubbleAtts = [];
-  if (pending.length) {
-    try {
-      for (const a of pending) {
-        const dataUrl = await readFileAsDataURL(a.file);
-        payload.push({ name: a.name, mediaType: a.mediaType, data: dataUrl });
-        bubbleAtts.push({ name: a.name, isImage: a.isImage, dataUrl });
-      }
-    } catch (err) {
-      appendErrorBubble('Could not read an attachment: ' + (err && err.message || err));
-      return;
-    }
+  let readFailed = 0;
+  for (const a of pending) {
+    let dataUrl = null;
+    try { dataUrl = await fileToDataURL(a.file, a.isImage); } catch { dataUrl = null; }
+    if (!dataUrl) { readFailed++; continue; }
+    // The media type / extension may have changed (e.g. an image re-encoded to JPEG).
+    const mt = (dataUrl.match(/^data:([^;]+);/) || [])[1] || a.mediaType || 'application/octet-stream';
+    let name = a.name;
+    if (a.isImage && /jpeg/.test(mt) && !/\.jpe?g$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg';
+    payload.push({ name, mediaType: mt, data: dataUrl });
+    bubbleAtts.push({ name, isImage: a.isImage, dataUrl });
   }
+  if (readFailed) appendErrorBubble(`${readFailed} attachment${readFailed > 1 ? 's' : ''} could not be read and ${readFailed > 1 ? 'were' : 'was'} skipped.`);
+  if (!payload.length && !text) { updateSendBtn(); return; }   // nothing usable to send
 
   appendUserBubble(text, undefined, bubbleAtts);
   scrollBottom(true);   // sending a prompt re-pins to the bottom

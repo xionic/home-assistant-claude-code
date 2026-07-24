@@ -1,3 +1,8 @@
+## 1.9.1
+- Composer redesigned so the attach and send buttons sit on their own row below the text — the typing area now spans the full width, like the Claude app
+- Fixed attaching **multiple** photos silently failing on mobile (files the picker reported as zero-size were being dropped)
+- Attached images are now downscaled before sending, so photos upload far faster and many fit at once (also normalizes formats like HEIC)
+
 ## 1.9.0
 - **Attach images, photos, and files** to a message — via the paperclip button, pasting a screenshot, or drag-and-drop. Claude reads them (it sees images/PDFs and reads text/code). On mobile the picker offers the camera and photo library
 
