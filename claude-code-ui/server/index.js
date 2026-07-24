@@ -1204,13 +1204,17 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     if (!abortController.signal.aborted) {
       const message = String(err?.message || err);
       log('ERROR', `query failed after ${((Date.now() - startedAt) / 1000).toFixed(1)}s: ${message}`);
-      // A stale resume id (e.g. after the SDK session expired) — drop it so the
-      // next prompt starts a fresh session.
-      if (resuming) { activeSessionId = null; saveActive(); }
       if (isAuthError(message)) {
+        // Auth failure (e.g. expired OAuth) — the SESSION is fine; keep it so the
+        // conversation resumes after re-login. (Dropping it here made a later
+        // "continue" start a brand-new empty session.)
         credentialsExpired = true;
         log('WARN', 'query failed on authentication — prompting re-login');
         broadcast({ type: 'auth_expired', subscription: isSubscriptionAuth() });
+      } else if (resuming) {
+        // A genuinely stale resume id (e.g. the SDK session expired) — drop it so
+        // the next prompt starts fresh.
+        activeSessionId = null; saveActive();
       }
       broadcast({ type: 'error', message });
     }

@@ -1,3 +1,6 @@
+## 1.8.3
+- Fixed: after re-authenticating in a long chat, typing "continue" started a new empty session instead of resuming — an auth failure no longer discards the current session
+
 ## 1.8.2
 - Fixed the sign-in code box vanishing when you switch to the browser and back during (re-)authentication — an in-progress login is now restored on reconnect, and login success is detected only when fresh credentials are written
 
