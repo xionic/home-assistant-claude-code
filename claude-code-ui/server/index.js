@@ -479,17 +479,33 @@ function isSubscriptionAuth() {
     existsSync(path.join(CLAUDE_CONFIG_DIR, '.credentials.json'));
 }
 
-// One active login process shared across all connections
+// One active login process shared across all connections. `loginUrl` holds the
+// captured device-login URL so a client that reconnects mid-login (e.g. after
+// switching to the browser and back on mobile) can be shown the code box again —
+// the login process keeps running server-side regardless of the socket.
 let loginProc = null;
 let loginPollInterval = null;
+let loginUrl = null;
+let loginStartedAt = 0;
 
 function stopLoginProc() {
   if (loginPollInterval) { clearInterval(loginPollInterval); loginPollInterval = null; }
   if (loginProc) { try { loginProc.kill(); } catch {} loginProc = null; }
+  loginUrl = null;
+}
+
+// A login only counts as successful when NEW credentials are written by *this*
+// login — during re-auth the old (expired) file still exists, so plain existence
+// (isAuthenticated) would falsely report success before the user pastes the code.
+function loginSucceeded() {
+  if (process.env.ANTHROPIC_API_KEY) return true;
+  const f = path.join(CLAUDE_CONFIG_DIR, '.credentials.json');
+  try { return existsSync(f) && statSync(f).mtimeMs >= loginStartedAt; } catch { return false; }
 }
 
 function startLoginFlow(notifyAll) {
   stopLoginProc();
+  loginStartedAt = Date.now();
 
   loginProc = spawn('claude', ['auth', 'login'], {
     env: {
@@ -512,6 +528,7 @@ function startLoginFlow(notifyAll) {
     const url    = (tagged && tagged[1]) || (raw && raw[0]);
     if (url) {
       sentUrl = true;
+      loginUrl = url;
       notifyAll({ type: 'auth_url', url });
       startPolling(notifyAll);
     }
@@ -522,7 +539,7 @@ function startLoginFlow(notifyAll) {
 
   loginProc.on('exit', () => {
     loginProc = null;
-    if (isAuthenticated()) {
+    if (loginSucceeded()) {
       stopLoginProc();
       credentialsExpired = false;
       notifyAll({ type: 'auth_status', authenticated: true });
@@ -533,7 +550,7 @@ function startLoginFlow(notifyAll) {
 function startPolling(notifyAll) {
   if (loginPollInterval) return;
   loginPollInterval = setInterval(() => {
-    if (isAuthenticated()) {
+    if (loginSucceeded()) {
       stopLoginProc();
       credentialsExpired = false;
       notifyAll({ type: 'auth_status', authenticated: true });
@@ -795,6 +812,9 @@ wss.on('connection', (ws) => {
     autoContinue: autoContinue.enabled, autoContinueSupported: isSubscriptionAuth() });
   send(ws, { type: 'auth_status', authenticated: isAuthenticated() && !credentialsExpired });
   if (credentialsExpired) send(ws, { type: 'auth_expired', subscription: isSubscriptionAuth() });
+  // A login is mid-flight (reconnected while waiting to paste the code) — restore
+  // the URL + code box so switching to the browser and back doesn't lose it.
+  if (loginProc && loginUrl) send(ws, { type: 'auth_url', url: loginUrl });
   send(ws, { type: 'slash_commands', commands: cachedSlashCommands });
   // Link targets so the client can turn entity ids in replies into HA links
   send(ws, { type: 'ha_links', entities: haLinks.entities, automations: haLinks.automations });

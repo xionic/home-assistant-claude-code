@@ -232,6 +232,11 @@ function handleServerMessage(msg) {
       break;
 
     case 'auth_url':
+      // A login is in progress — make sure the login screen is up (it may be a
+      // replay after a mid-login reconnect) and show the URL + code box.
+      loginScreen.classList.remove('hidden');
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Waiting for sign-in…';
       loginUrlSect.classList.remove('hidden');
       loginUrlEl.href = msg.url;
       loginUrlEl.textContent = msg.url;
