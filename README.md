@@ -5,12 +5,10 @@
 A Home Assistant app that runs **Claude Code as a mobile-friendly chat** in your
 browser, with direct access to your Home Assistant configuration and live state.
 It's a self-contained chat UI backed by the [Claude Agent SDK](https://docs.anthropic.com/en/api/agent-sdk),
-running inside HA and reachable from your phone through the Home Assistant
-companion app.
+running inside HA, providing more user friendly access to the features of Claude Code than terminal based apps.
 
 Ask it to build an automation, explain why the heating fired at 3am, or tidy up a
-dashboard — it reads your real config and entities, and every tool call is yours
-to approve.
+dashboard — it can read your config and entity states, and supports auto or manual approvals.
 
 [![Add app repository to My Home Assistant.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fxionic%2Fhome-assistant-claude-code)
 
