@@ -1,6 +1,6 @@
-# Claude Code UI — Home Assistant Add-on
+# Claude Code UI — Home Assistant App
 
-A browser-based Claude Code interface running as an HA add-on. Provides a chat UI backed by the Claude Agent SDK with direct access to Home Assistant config and state.
+A browser-based Claude Code interface running as an HA app. Provides a chat UI backed by the Claude Agent SDK with direct access to Home Assistant config and state.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ browser  ←→  WebSocket  ←→  server/index.js  ←→  @anthropic-ai/claud
 
 - **`server/index.js`** — Express + WebSocket server; calls `query()` from Agent SDK; streams events to browser
 - **`frontend/`** — Single-page chat UI (vanilla JS, no build step)
-- **`run.sh`** — Add-on entrypoint; initialises `/data` environment, runs context generation, starts Node
+- **`run.sh`** — App entrypoint; initialises `/data` environment, runs context generation, starts Node
 - **`plugins/homeassistant-config/`** — Local plugin with SKILL.md and pre-save YAML validation hook
 - **`scripts/`** — `ha-context.sh` (writes the generated HA context to `~/.claude/ha-context.md`), `browser-capture.sh` (auth flow URL capture), `ha-lovelace.cjs` / `ha-stats.cjs` / `ha-history.cjs` (Node WebSocket CLIs)
 
@@ -26,7 +26,7 @@ browser  ←→  WebSocket  ←→  server/index.js  ←→  @anthropic-ai/claud
 ## Deploy Workflow
 
 ```bash
-# Copy to add-on directory on HA host
+# Copy to app directory on HA host
 scp -P 222 -r claude-code-ui/ root@192.168.1.10:/addons/
 
 # IMPORTANT: strip the `image:` key from the LOCAL copy so the Supervisor builds
@@ -43,7 +43,7 @@ ssh -p 222 root@192.168.1.10 "ha apps rebuild local_claude-code-ui"
 ssh -p 222 root@192.168.1.10 "ha apps update local_claude-code-ui"
 ```
 
-SSH key: `~/.ssh/ha_claude`. Host: `192.168.1.10:222`. User: `root` (HA SSH add-on default).
+SSH key: `~/.ssh/ha_claude`. Host: `192.168.1.10:222`. User: `root` (HA SSH app default).
 
 To bust Docker layer cache for shell script changes, bump `ARG SCRIPTS_VER` in the Dockerfile.
 
@@ -67,9 +67,21 @@ anonymously.
 - **`ANTHROPIC_CONFIG_DIR`**: `/data/.config/claude` — persists Claude auth credentials across restarts
 - **`WORK_DIR`**: `/config` (HA config directory, mounted read-write)
 
+### Folder maps
+
+`config.yaml` uses the current Supervisor map types with **explicit `path` pins**:
+`homeassistant_config` → `/config` (its default is `/homeassistant`) and
+`all_app_configs` → `/addon_configs` (its default is `/app_configs`). The pins are
+deliberate — `WORK_DIR`, the persisted Claude session keys (`~/.claude.json` is
+keyed on the project dir `/config`), the `/addon_configs` guard in
+`server/index.js`, and the ESPHome fallback in `run.sh` are all written against
+these paths, so taking the new defaults would be a breaking change, not a rename.
+The legacy names (`config`, `all_addon_configs`) still work but log deprecation
+advisories; `all_app_configs` requires **Supervisor 2026.07+**.
+
 ## Authentication
 
-Claude authenticates via device flow (`claude auth login`) or `ANTHROPIC_API_KEY` in add-on config. Credentials persist in `/data/.config/claude/.credentials.json`. The server checks this on connect and shows a login screen if unauthenticated.
+Claude authenticates via device flow (`claude auth login`) or `ANTHROPIC_API_KEY` in app config. Credentials persist in `/data/.config/claude/.credentials.json`. The server checks this on connect and shows a login screen if unauthenticated.
 
 ## HA Tool Access
 
@@ -91,7 +103,7 @@ Both `ha-ws-client` and `ha-lovelace` connect to `ws://supervisor/core/api/webso
 
 `GET /diag` runs a read-only auth/connectivity probe from inside the container: reports `$SUPERVISOR_TOKEN` presence, then exercises ha-ws-client, REST, and ha-lovelace with the live token. Use it to confirm what authenticates without theorising.
 
-All diagnostic routes are **only registered when the `debug` add-on option is `true`** (default `false`); otherwise they're absent and requests fall through to the SPA. Enable via the add-on **Configuration** tab, or the Supervisor API (`POST /addons/local_claude-code-ui/options` with the full options object incl. `"debug": true`, then restart). The Supervisor token is available as `$SUPERVISOR_TOKEN` inside the SSH & Web Terminal add-on.
+All diagnostic routes are **only registered when the `debug` app option is `true`** (default `false`); otherwise they're absent and requests fall through to the SPA. Enable via the app **Configuration** tab, or the Supervisor API (`POST /addons/local_claude-code-ui/options` with the full options object incl. `"debug": true`, then restart). The Supervisor token is available as `$SUPERVISOR_TOKEN` inside the SSH & Web Terminal app.
 
 Endpoints:
 - `GET /diag` — env + auth probes (ha-ws-client, REST, ha-lovelace) and the persisted-MCP extract from `~/.claude.json`.
@@ -106,21 +118,21 @@ curl http://$IP:7681/diag | jq .
 curl "http://$IP:7681/diag/query?q=Tell%20me%20the%20car%20battery%20state" | jq '.events'
 ```
 
-**ha-mcp has been removed entirely** — it was unreliable (broken WebSocket auth; mis-reports dashboards; the SDK doesn't invoke `canUseTool` for MCP tools so they bypass prompts). Use ha-ws-client + ha-history/ha-stats + ha-lovelace + direct YAML edits, which run as Bash/Edit calls and honour the permission mode. The `enable_ha_mcp` / `ha_token` add-on options are gone.
+**ha-mcp has been removed entirely** — it was unreliable (broken WebSocket auth; mis-reports dashboards; the SDK doesn't invoke `canUseTool` for MCP tools so they bypass prompts). Use ha-ws-client + ha-history/ha-stats + ha-lovelace + direct YAML edits, which run as Bash/Edit calls and honour the permission mode. The `enable_ha_mcp` / `ha_token` app options are gone.
 
-**Important — persisted MCP state:** the Claude CLI persists MCP servers into `~/.claude.json` (`projects["/config"].mcpServers`), and the SDK auto-loads them on every run. An early MCP-enabled build wrote a `home-assistant` server there, which kept loading and causing "Invalid authentication token" errors long after we stopped configuring it. `sanitizeMcpState()` in `server/index.js` strips persisted `mcpServers` (global + per-project) at startup so the add-on never loads a stale MCP server. **Do not remove it** even though we no longer configure any MCP servers ourselves.
+**Important — persisted MCP state:** the Claude CLI persists MCP servers into `~/.claude.json` (`projects["/config"].mcpServers`), and the SDK auto-loads them on every run. An early MCP-enabled build wrote a `home-assistant` server there, which kept loading and causing "Invalid authentication token" errors long after we stopped configuring it. `sanitizeMcpState()` in `server/index.js` strips persisted `mcpServers` (global + per-project) at startup so the app never loads a stale MCP server. **Do not remove it** even though we no longer configure any MCP servers ourselves.
 
-### Other add-ons' configs (`/addon_configs`)
+### Other apps' configs (`/addon_configs`)
 
-The `all_addon_configs:rw` map in `config.yaml` mounts every other add-on's config folder at `/addon_configs/<repo>_<slug>/`. HA folder maps are **static** (always mounted; can't be toggled per-option), so access is gated in the app instead: the `allow_addon_configs` option (default **false**) → `ALLOW_ADDON_CONFIGS` env → a **PreToolUse hook** (`ADDON_CONFIGS_HOOKS` in `server/index.js`) that returns `permissionDecision: 'deny'` for any tool call whose serialized input contains `/addon_configs`. A PreToolUse hook is used rather than `canUseTool` because it runs in **every** permission mode — including `auto`, which has no `canUseTool` — and its deny short-circuits the tool before it runs. The hook is only attached when access is disabled (no per-call overhead when enabled). When enabled, `ha-context.sh` appends a section telling Claude the folder exists and how it's laid out; when disabled it's not advertised at all.
+The `all_app_configs` map in `config.yaml` mounts every other app's config folder at `/addon_configs/<repo>_<slug>/`. HA folder maps are **static** (always mounted; can't be toggled per-option), so access is gated in the app instead: the `allow_addon_configs` option (default **false**) → `ALLOW_ADDON_CONFIGS` env → a **PreToolUse hook** (`ADDON_CONFIGS_HOOKS` in `server/index.js`) that returns `permissionDecision: 'deny'` for any tool call whose serialized input contains `/addon_configs`. A PreToolUse hook is used rather than `canUseTool` because it runs in **every** permission mode — including `auto`, which has no `canUseTool` — and its deny short-circuits the tool before it runs. The hook is only attached when access is disabled (no per-call overhead when enabled). When enabled, `ha-context.sh` appends a section telling Claude the folder exists and how it's laid out; when disabled it's not advertised at all.
 
 ## Conversation Persistence
 
-There is one persistent conversation (single-user add-on). `server/index.js` keeps a global `conversation = { sessionId, transcript }` saved to `/data/conversation.json` (debounced), so the chat survives browser reconnects and add-on / HA restarts until the user hits **New chat** (`new_session` → `clearConversation` + broadcast `cleared`). On connect the server replays `{ type: 'history', items, running }`; the client rebuilds the DOM via `renderHistory`. Queries run on a module-level `activeQuery` AbortController — **not** tied to a connection — so navigating away mid-response doesn't cancel it (the run keeps recording, and `ws.close` no longer aborts). `sessionId` is used for SDK `resume`; a stale id is dropped on error so the next prompt starts fresh while keeping the visual transcript.
+There is one persistent conversation (single-user app). `server/index.js` keeps a global `conversation = { sessionId, transcript }` saved to `/data/conversation.json` (debounced), so the chat survives browser reconnects and app / HA restarts until the user hits **New chat** (`new_session` → `clearConversation` + broadcast `cleared`). On connect the server replays `{ type: 'history', items, running }`; the client rebuilds the DOM via `renderHistory`. Queries run on a module-level `activeQuery` AbortController — **not** tied to a connection — so navigating away mid-response doesn't cancel it (the run keeps recording, and `ws.close` no longer aborts). `sessionId` is used for SDK `resume`; a stale id is dropped on error so the next prompt starts fresh while keeping the visual transcript.
 
 ## Permission Modes
 
-Selectable in the UI per-prompt; the **default for new chats** comes from the `default_permission_mode` add-on option (`DEFAULT_PERMISSION_MODE` → sent to the client in the `config` connect message; localStorage overrides it once the user picks one).
+Selectable in the UI per-prompt; the **default for new chats** comes from the `default_permission_mode` app option (`DEFAULT_PERMISSION_MODE` → sent to the client in the `config` connect message; localStorage overrides it once the user picks one).
 
 - **Ask** — `canUseTool` prompts the user for each tool call
 - **Plan** — SDK-native plan mode (`permissionMode: 'plan'`): the model is restricted to read-only tools and proposes a plan. Routed through `canUseTool` too, which auto-allows read-only tools and only prompts on `ExitPlanMode` (the plan-approval step). Like `auto`, a run *started* in plan can't be live-switched.
@@ -146,7 +158,7 @@ When a **claude.ai subscription** hits its **5-hour** usage limit mid-run, the S
 ## Logging & the "chat hangs" symptom
 
 Reported symptom: a response stops coming, then resumes minutes later (not a true hang — usually long silent thinking, a slow tool, a retry/backoff, or auto-compaction). Instrumentation added for it:
-- **Server** (`server/index.js`): milestone logs always at INFO — query start (mode/effort/model/resume), result (duration/turns/cost), compaction, errors. A **stall watchdog** logs a WARN when no SDK event arrives for ≥20s during a run. Context usage is logged each turn (WARN ≥90%). The `verbose_logging` add-on option (`VERBOSE_LOGGING`) adds per-event DEBUG logs (each text/tool_use/tool_result). All go to the add-on log.
+- **Server** (`server/index.js`): milestone logs always at INFO — query start (mode/effort/model/resume), result (duration/turns/cost), compaction, errors. A **stall watchdog** logs a WARN when no SDK event arrives for ≥20s during a run. Context usage is logged each turn (WARN ≥90%). The `verbose_logging` app option (`VERBOSE_LOGGING`) adds per-event DEBUG logs (each text/tool_use/tool_result). All go to the app log.
 - **Frontend**: the Working indicator shows **elapsed seconds** (restarts each quiet stretch) and the context indicator turns amber→red with a `/compact` nudge as the window fills.
 - **/compact echo**: slash-command runs are recorded in the transcript as user messages wrapped in `<command-name>…`/`<local-command-stdout>…`. `isCommandEcho()` in `lineToItems` filters them so `/compact` doesn't pollute the chat.
 
@@ -162,7 +174,7 @@ Reported symptom: a response stops coming, then resumes minutes later (not a tru
 
 | File | Purpose |
 |------|---------|
-| `config.yaml` | Add-on manifest, options schema |
+| `config.yaml` | App manifest, options schema |
 | `build.yaml` | Docker build args (base image) |
 | `Dockerfile` | Image build: Node, Agent SDK binary, ha-ws-client, ha-lovelace/ha-history/ha-stats wrappers, plugin |
 | `run.sh` | Entrypoint: env init, packages, HA context, start server |

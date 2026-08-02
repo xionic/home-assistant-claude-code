@@ -1,5 +1,5 @@
 name: "Claude Code UI"
-version: "1.9.1"
+version: "1.9.2"
 slug: "claude-code-ui"
 # Prebuilt multi-arch image published by CI (.github/workflows/build.yml). Store
 # installs pull this instead of building locally. NOTE: local dev installs must
@@ -19,10 +19,24 @@ homeassistant_api: true
 auth_api: true
 hassio_api: true
 hassio_role: manager
+# Both legacy map types are gone: `config` was deprecated in Supervisor 2023.11
+# (it mounted HA's config at /config) and `all_addon_configs` in 2026.07 (the
+# add-on -> app rename). The explicit `path` on each keeps the in-container
+# layout exactly as it was — `homeassistant_config` would otherwise mount at
+# /homeassistant and `all_app_configs` at /app_configs. That matters: WORK_DIR,
+# the persisted Claude session keys (~/.claude.json is keyed on the project dir
+# /config) and the /addon_configs access guard in server/index.js are all
+# written against these paths.
+# NOTE: `all_app_configs` requires Supervisor 2026.07+; on older Supervisors this
+# manifest is rejected outright (unknown map type).
 map:
-  - config:rw
-  - all_addon_configs:rw
-# Keep multi-GB, tens-of-thousands-of-files build caches out of add-on backups.
+  - type: homeassistant_config
+    read_only: false
+    path: /config
+  - type: all_app_configs
+    read_only: false
+    path: /addon_configs
+# Keep multi-GB, tens-of-thousands-of-files build caches out of app backups.
 # When ESPHome compiles, ESP-IDF/PlatformIO write GBs of small files under /data;
 # including them in the nightly backup caused a tiny-file IO storm that starved
 # the host watchdog and hard-reset the Pi. All excluded paths are reproducible

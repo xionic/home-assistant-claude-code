@@ -281,7 +281,10 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
   display: flex;
   flex-direction: column;
   gap: 10px;
-  scroll-behavior: smooth;
+  /* No `scroll-behavior: smooth` here: auto-scrolling to the bottom must be
+     instant. Animating it means a rebuild (load / reconnect) visibly races the
+     view from the top to the bottom. Deliberate jumps — e.g. the search-match
+     scrollIntoView — pass `behavior: 'smooth'` themselves. */
 }
 
 .messages::-webkit-scrollbar          { width: 4px; }

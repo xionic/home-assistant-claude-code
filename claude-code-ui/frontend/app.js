@@ -282,7 +282,7 @@ function showReauth(subscription) {
   if (subscription === false) {
     // API-key auth: a device-flow login won't help, so point at the option.
     loginTitle.textContent = 'Authentication failed';
-    loginDesc.textContent = 'Your Anthropic API key was rejected — check it in the add-on options.';
+    loginDesc.textContent = 'Your Anthropic API key was rejected — check it in the app options.';
     loginBtn.classList.add('hidden');
   } else {
     loginTitle.textContent = 'Session expired';
@@ -946,28 +946,44 @@ function appendInfoBubble(text) {
   scrollBottom();
 }
 
-// Rebuild the chat from a persisted transcript (on connect / reconnect)
+// Rebuild the chat from a persisted transcript (on connect / reconnect).
+// A reconnect replays the *whole* transcript, and clearScreen() empties the
+// list — which resets scrollTop to 0 and re-pins stickToBottom. Left alone,
+// every re-appended bubble then calls scrollBottom() and the view jumps back
+// to the bottom while the user is reading. So: suppress the per-item
+// auto-scroll, rebuild, then restore where they were in one silent move.
 function renderHistory(items) {
+  const wasPinned = stickToBottom;
+  const prevTop   = messagesEl.scrollTop;
+  suppressAutoScroll = true;
   clearScreen();
-  for (const it of items) {
-    switch (it.kind) {
-      case 'user':        usage.messages++; appendUserBubble(it.text, it.ts); break;
-      case 'text':        appendAssistantText(it.text, it.ts); break;
-      case 'tool_use':    lastAssistantBubble = null; appendToolUse(it.id, it.name, it.input); break;
-      case 'tool_result': appendToolResult(it.id, it.output, it.isError); break;
-      case 'result':      lastAssistantBubble = null; appendResultLine(it);
-                          usage.turns        += it.turns       || 0;
-                          usage.cost         += it.cost        || 0;
-                          usage.inputTokens  += it.inputTokens  || 0;
-                          usage.outputTokens += it.outputTokens || 0;
-                          usage.cacheReadTokens  += it.cacheReadTokens  || 0;
-                          usage.cacheWriteTokens += it.cacheWriteTokens || 0;
-                          break;
-      case 'error':       lastAssistantBubble = null; appendErrorBubble(it.message); break;
+  try {
+    for (const it of items) {
+      switch (it.kind) {
+        case 'user':        usage.messages++; appendUserBubble(it.text, it.ts); break;
+        case 'text':        appendAssistantText(it.text, it.ts); break;
+        case 'tool_use':    lastAssistantBubble = null; appendToolUse(it.id, it.name, it.input); break;
+        case 'tool_result': appendToolResult(it.id, it.output, it.isError); break;
+        case 'result':      lastAssistantBubble = null; appendResultLine(it);
+                            usage.turns        += it.turns       || 0;
+                            usage.cost         += it.cost        || 0;
+                            usage.inputTokens  += it.inputTokens  || 0;
+                            usage.outputTokens += it.outputTokens || 0;
+                            usage.cacheReadTokens  += it.cacheReadTokens  || 0;
+                            usage.cacheWriteTokens += it.cacheWriteTokens || 0;
+                            break;
+        case 'error':       lastAssistantBubble = null; appendErrorBubble(it.message); break;
+      }
     }
+    lastAssistantBubble = null;
+    endToolGroup();   // finalise (and collapse) any trailing tool-call group
+  } finally {
+    suppressAutoScroll = false;
   }
-  lastAssistantBubble = null;
-  endToolGroup();   // finalise (and collapse) any trailing tool-call group
+  // Content above the reader is identical after a replay, so their old
+  // scrollTop still points at the same place.
+  stickToBottom = wasPinned;
+  messagesEl.scrollTop = wasPinned ? messagesEl.scrollHeight : prevTop;
 }
 
 // ── Working indicator ────────────────────────────────────────────────────────
@@ -1646,7 +1662,7 @@ acBannerCancel.onclick = () => {
 };
 
 // Restore + persist the permission mode so it survives navigating away. The
-// add-on's default_permission_mode (sent as a 'config' message) fills in when
+// app's default_permission_mode (sent as a 'config' message) fills in when
 // the user hasn't chosen one yet.
 permModeSelect.value = localStorage.getItem('permMode') || 'ask';
 permModeSelect.onchange = () => {
@@ -1728,6 +1744,10 @@ function setStatus(state) {
 let stickToBottom = true;
 const SCROLL_STICK_PX = 80;   // within this many px of the bottom counts as "at bottom"
 
+// Set while the transcript is being rebuilt wholesale (renderHistory), so the
+// dozens of appends that rebuild does don't each drag the viewport around.
+let suppressAutoScroll = false;
+
 // Auto-hide the header on small screens: collapse it when scrolling down through
 // a long chat (to reclaim space), slide it back in on any upward scroll (so the
 // user doesn't have to scroll all the way to the top to reach settings). CSS
@@ -1769,6 +1789,7 @@ messagesEl.addEventListener('scroll', () => {
 
 function scrollBottom(force) {
   if (force) stickToBottom = true;
+  if (suppressAutoScroll) return;
   if (stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 

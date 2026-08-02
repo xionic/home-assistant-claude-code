@@ -12,12 +12,12 @@ configuration:
   ha_smart_context:
     name: Home Assistant smart context
     description: >-
-      Load your HA system info, entities, add-ons, and recent errors into Claude's
+      Load your HA system info, entities, apps, and recent errors into Claude's
       context each session. Recommended on.
   allow_addon_configs:
-    name: Allow access to other add-on configs
+    name: Allow access to other app configs
     description: >-
-      Let Claude read and edit other add-ons' config folders under
+      Let Claude read and edit other apps' config folders under
       /addon_configs. Off by default; those configs may contain secrets.
   enable_esphome:
     name: ESPHome support
@@ -28,7 +28,7 @@ configuration:
   verbose_logging:
     name: Verbose logging
     description: >-
-      Write detailed per-event logs to the add-on log for diagnosing a chat that
+      Write detailed per-event logs to the app log for diagnosing a chat that
       seems to hang. Milestone logs are always recorded.
   debug:
     name: Debug mode (dangerous)

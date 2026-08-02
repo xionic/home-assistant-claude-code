@@ -85,7 +85,7 @@ RUN for tool in ha-lovelace ha-stats ha-history; do \
         && chmod +x "/usr/local/bin/$tool"; \
     done
 
-# `esphome` command — thin wrapper over the venv the add-on installs into /data
+# `esphome` command — thin wrapper over the venv the app installs into /data
 # on first enable (optional ESPHome capability). Present even when disabled so an
 # attempt gives a helpful message rather than "command not found". Points the
 # PlatformIO compiler cache at /data so it persists across restarts.
@@ -100,8 +100,8 @@ RUN printf '%s\n' \
     '  command -v ionice >/dev/null 2>&1 && NICE="$NICE ionice -c 3"' \
     '  exec $NICE "$ESPHOME_BIN" "$@"' \
     'fi' \
-    'echo "ESPHome is not installed. Turn on \"enable_esphome\" in the add-on options;" >&2' \
-    'echo "first-time setup installs it in the background (a few minutes) — watch the add-on log." >&2' \
+    'echo "ESPHome is not installed. Turn on \"enable_esphome\" in the app options;" >&2' \
+    'echo "first-time setup installs it in the background (a few minutes) — watch the app log." >&2' \
     'exit 1' \
     > /usr/local/bin/esphome \
     && chmod +x /usr/local/bin/esphome

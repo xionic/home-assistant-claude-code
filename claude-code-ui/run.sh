@@ -106,7 +106,7 @@ generate_ha_context() {
 @ha-context.md
 
 <!-- Your own persistent instructions for Claude go below. This file is created
-     once and never overwritten by the add-on, so your edits are safe. The line
+     once and never overwritten by the app, so your edits are safe. The line
      above imports the auto-generated Home Assistant context. -->
 CLAUDEMD
         bashio::log.info "Seeded user-editable CLAUDE.md at $claude_md"
@@ -116,7 +116,7 @@ CLAUDEMD
 # (ha-mcp is configured directly in the Node server via mcpServers option)
 
 # ---------------------------------------------------------------------------
-# ESPHome capability (optional) — detect the installed ESPHome add-on, expose
+# ESPHome capability (optional) — detect the installed ESPHome app, expose
 # its config folder, and lazily install the esphome CLI into /data on first use.
 # ---------------------------------------------------------------------------
 setup_esphome() {
@@ -128,11 +128,11 @@ setup_esphome() {
         return 0
     fi
 
-    # Locate the ESPHome device YAML. The ESPHome "Device Builder" add-on keeps
+    # Locate the ESPHome device YAML. The ESPHome "Device Builder" app keeps
     # its configs in /config/esphome (the HA config dir we already map) — the
     # common case, and directly accessible with no /addon_configs involved. Some
     # setups instead use the shared /addon_configs/<slug> folder; fall back to
-    # that (found via the add-on whose slug ends in _esphome), which relies on
+    # that (found via the app whose slug ends in _esphome), which relies on
     # allow_addon_configs / the guard exemption.
     # `|| true` so a failed supervisor call can't trip `set -e` and abort startup.
     local slug
@@ -145,7 +145,7 @@ setup_esphome() {
         bashio::log.info "ESPHome enabled — configs at ${ESPHOME_CONFIG_DIR}"
     elif [ -n "$slug" ] && [ -d "/addon_configs/${slug}" ]; then
         ESPHOME_CONFIG_DIR="/addon_configs/${slug}"
-        bashio::log.info "ESPHome enabled — configs at ${ESPHOME_CONFIG_DIR} (add-on: ${slug})"
+        bashio::log.info "ESPHome enabled — configs at ${ESPHOME_CONFIG_DIR} (app: ${slug})"
     else
         bashio::log.warning "ESPHome enabled but no config folder found (looked in /config/esphome and /addon_configs) — the esphome CLI still works on paths you give it"
     fi
@@ -165,12 +165,12 @@ start_server() {
 
     bashio::log.info "Starting Claude Code UI server on port ${port}..."
 
-    # Export API key if set in add-on config (overrides any saved credentials)
+    # Export API key if set in app config (overrides any saved credentials)
     local api_key
     api_key=$(bashio::config 'anthropic_api_key' '')
     if [ -n "$api_key" ] && [ "$api_key" != "null" ]; then
         export ANTHROPIC_API_KEY="$api_key"
-        bashio::log.info "Anthropic API key loaded from add-on config"
+        bashio::log.info "Anthropic API key loaded from app config"
     fi
 
     export SERVER_PORT="${port}"
@@ -185,9 +185,9 @@ start_server() {
     fi
 
     if [ "$ALLOW_ADDON_CONFIGS" = "true" ]; then
-        bashio::log.info "Other add-on config access enabled — /addon_configs is available"
+        bashio::log.info "Other app config access enabled — /addon_configs is available"
     else
-        bashio::log.info "Other add-on config access disabled — /addon_configs is blocked"
+        bashio::log.info "Other app config access disabled — /addon_configs is blocked"
     fi
 
     if [ "$VERBOSE_LOGGING" = "true" ]; then
@@ -206,9 +206,9 @@ start_server() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
-    bashio::log.info "Starting Claude Code UI add-on..."
+    bashio::log.info "Starting Claude Code UI app..."
 
-    # Whether the assistant may access other add-ons' config folders
+    # Whether the assistant may access other apps' config folders
     # (/addon_configs). Read once and exported so both the context generator and
     # the server agree. The mount itself is always present (HA folder maps are
     # static); this flag gates access at the tool-call layer in the server.

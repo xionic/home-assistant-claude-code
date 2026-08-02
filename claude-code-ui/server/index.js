@@ -16,7 +16,7 @@ const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
 
 // Optional ESPHome capability. When enabled we load an extra local plugin (the
-// esphome skill) and exempt the ESPHome add-on's config folder from the
+// esphome skill) and exempt the ESPHome app's config folder from the
 // addon-configs guard so the esphome CLI can work on it.
 const ENABLE_ESPHOME = process.env.ENABLE_ESPHOME === 'true';
 const ESPHOME_CONFIG_DIR = process.env.ESPHOME_CONFIG_DIR || '';
@@ -26,14 +26,14 @@ const ESPHOME_PLUGIN_DIR = '/opt/plugins/esphome';
 const PLUGINS = [{ type: 'local', path: PLUGIN_DIR }];
 if (ENABLE_ESPHOME) PLUGINS.push({ type: 'local', path: ESPHOME_PLUGIN_DIR });
 
-// Whether the agent may touch other add-ons' config folders. HA always mounts
-// `all_addon_configs` at /addon_configs (folder maps are static), so this flag
-// — set from the `allow_addon_configs` add-on option — is what actually gates
+// Whether the agent may touch other apps' config folders. HA always mounts
+// `all_app_configs` at /addon_configs (folder maps are static), so this flag
+// — set from the `allow_addon_configs` app option — is what actually gates
 // access, enforced by the PreToolUse hook below.
 const ALLOW_ADDON_CONFIGS = process.env.ALLOW_ADDON_CONFIGS === 'true';
 const ADDON_CONFIGS_PATH = '/addon_configs';
 
-// Extra per-event logging to the add-on log (from the `verbose_logging` option).
+// Extra per-event logging to the app log (from the `verbose_logging` option).
 const VERBOSE_LOGGING = process.env.VERBOSE_LOGGING === 'true';
 
 // Tools auto-approved in 'acceptEdits' mode (file edits only).
@@ -69,7 +69,7 @@ const AUTO_CONTINUE_PROMPT =
   'The usage limit has reset. Please continue from where you left off.';
 
 // ── Logging ───────────────────────────────────────────────────────────────────
-// Everything here lands in the add-on log (Supervisor → add-on → Log). We keep
+// Everything here lands in the app log (Supervisor → app → Log). We keep
 // milestone logs at INFO always, and gate the noisy per-event stream behind the
 // `verbose_logging` option so day-to-day logs stay readable.
 function log(level, msg) {
@@ -107,8 +107,8 @@ function addonConfigsDenyHook(input) {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason:
-        'Access to /addon_configs (other add-ons’ configuration) is disabled. ' +
-        'Turn on "Allow access to other add-on configs" in the add-on Configuration tab to enable it.',
+        'Access to /addon_configs (other apps’ configuration) is disabled. ' +
+        'Turn on "Allow access to other app configs" in the app Configuration tab to enable it.',
     },
   };
 }
@@ -124,7 +124,7 @@ const ADDON_CONFIGS_HOOKS = ALLOW_ADDON_CONFIGS
 let activePermMode = DEFAULT_PERMISSION_MODE;
 
 // Auto-continue runtime state. `enabled` is the user toggle (persisted to /data);
-// `pending` holds a scheduled resume so it survives an add-on/HA restart.
+// `pending` holds a scheduled resume so it survives an app/HA restart.
 // `autoContinueTimer` is the live setTimeout handle (not persisted).
 let autoContinue = { enabled: false, pending: null };
 let autoContinueTimer = null;
@@ -181,11 +181,11 @@ function cleanupUploads(maxAgeMs = 7 * 24 * 3600 * 1000) {
 }
 
 // ── Diagnostics ───────────────────────────────────────────────────────────
-// Read-only auth/connectivity probe, only registered when the `debug` add-on
+// Read-only auth/connectivity probe, only registered when the `debug` app
 // option is enabled (DEBUG_MODE). Runnable from the supervisor network:
 //   curl http://<addon-ip>:7681/diag | jq .
 // Tests ha-ws-client (WebSocket) and the REST supervisor proxy with the exact
-// environment the add-on runs under, so we can see what actually authenticates.
+// environment the app runs under, so we can see what actually authenticates.
 const execAsync = promisify(exec);
 
 async function runCmd(cmd, timeoutMs = 15000) {
@@ -1017,7 +1017,7 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     plugins: PLUGINS,
   };
 
-  // Block /addon_configs access unless the add-on option enables it.
+  // Block /addon_configs access unless the app option enables it.
   if (ADDON_CONFIGS_HOOKS) opts.hooks = ADDON_CONFIGS_HOOKS;
 
   if (model) opts.model = model;
@@ -1157,7 +1157,7 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
 
   // Stall watchdog — the reported "chat hangs" symptom. If no SDK event arrives
   // for a while during an active run (long thinking, a slow tool, a retry/
-  // backoff, or auto-compaction), log how long it's been quiet so the add-on log
+  // backoff, or auto-compaction), log how long it's been quiet so the app log
   // shows whether it's truly stuck or just working. Cleared in `finally`.
   let lastEventAt = Date.now();
   let lastEventKind = 'start';

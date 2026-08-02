@@ -1,11 +1,11 @@
 #!/bin/bash
 # esphome-setup — make the ESPHome toolchain ready. Run in the background by
-# run.sh on every start when `enable_esphome` is on, so the add-on/chat UI come
+# run.sh on every start when `enable_esphome` is on, so the app/chat UI come
 # up immediately. Idempotent and cheap when everything's already present.
 #
 # Two independent concerns:
 #   1. System build dependencies (patch, build-essential, …). These are apt
-#      packages that live in the container filesystem, so an add-on UPGRADE wipes
+#      packages that live in the container filesystem, so an app UPGRADE wipes
 #      them — we reinstall when missing (i.e. after each upgrade). Mirrors what
 #      the official ESPHome image bakes into its image; we install on demand so
 #      non-ESPHome users don't carry ~250MB of build tools.

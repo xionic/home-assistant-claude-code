@@ -1,9 +1,9 @@
-name: Build add-on image
+name: Build app image
 
 # Builds and publishes a multi-arch prebuilt image to GHCR so users who install
 # from the repository don't have to build the (Debian + Node SDK + …) image on
-# their own hardware. The image is tagged with the add-on version from
-# config.yaml, plus `latest`. Runs on pushes that touch the add-on, and manually.
+# their own hardware. The image is tagged with the app version from
+# config.yaml, plus `latest`. Runs on pushes that touch the app, and manually.
 on:
   push:
     branches: [master]
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   version:
-    name: Read add-on version
+    name: Read app version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -31,7 +31,7 @@ jobs:
         run: |
           VERSION=$(grep '^version:' claude-code-ui/config.yaml | head -1 | cut -d'"' -f2)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Add-on version: ${VERSION}"
+          echo "App version: ${VERSION}"
 
   init:
     name: Prepare build matrix
@@ -70,7 +70,7 @@ jobs:
           image-tags: |
             ${{ needs.version.outputs.version }}
             latest
-          # The new builder doesn't read build.yaml, so pass the add-on base image.
+          # The new builder doesn't read build.yaml, so pass the app base image.
           build-args: |
             BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base-debian:bookworm
           push: "true"

@@ -1,17 +1,17 @@
 ---
 name: esphome
-description: Work with ESPHome devices — read/edit their YAML, validate configs, compile firmware, flash over-the-air (OTA), and stream device logs to debug. Use when the user mentions ESPHome, a specific ESP device/board (ESP32/ESP8266/etc.), flashing firmware, or debugging a device that's misbehaving. Requires the add-on's "enable_esphome" option to be on.
+description: Work with ESPHome devices — read/edit their YAML, validate configs, compile firmware, flash over-the-air (OTA), and stream device logs to debug. Use when the user mentions ESPHome, a specific ESP device/board (ESP32/ESP8266/etc.), flashing firmware, or debugging a device that's misbehaving. Requires the app's "enable_esphome" option to be on.
 ---
 
 # ESPHome Skill
 
-The `esphome` CLI is bundled in this add-on (enabled via the `enable_esphome`
+The `esphome` CLI is bundled in this app (enabled via the `enable_esphome`
 option). Use it to validate, compile, flash, and debug ESPHome devices whose YAML
-lives in the ESPHome add-on's config folder.
+lives in the ESPHome app's config folder.
 
 ## Where the configs are
 
-Your ESPHome add-on's device YAML is exposed **read/write** inside this add-on.
+Your ESPHome app's device YAML is exposed **read/write** inside this app.
 The folder is in the `$ESPHOME_CONFIG_DIR` environment variable — always resolve
 it before doing anything:
 
@@ -22,7 +22,7 @@ ls "$ESPHOME_CONFIG_DIR"/*.yaml     # each device is a <name>.yaml
 
 `secrets.yaml` in that folder holds Wi-Fi/API/OTA secrets — **read it only if you
 must, never print secret values back to the user, and never move it.** The ESPHome
-dashboard add-on remains the user's editor; you're adding a CLI on top of the same
+dashboard app remains the user's editor; you're adding a CLI on top of the same
 files, so leave its own bookkeeping files (`.esphome/`, hidden dirs) alone.
 
 ## Commands
@@ -53,9 +53,9 @@ esphome logs     <device>.yaml     # stream the device's live logs over its API/
    downloads the PlatformIO toolchain (hundreds of MB) and can take several
    minutes on a Raspberry Pi; later builds are much faster (cached under `/data`).
 5. **If `esphome` says it isn't installed,** the background install hasn't
-   finished (or the option is off). Tell the user to check the add-on log / wait a
+   finished (or the option is off). Tell the user to check the app log / wait a
    few minutes — don't try to install it yourself.
-6. **After an add-on upgrade,** the system build tools (patch, compilers) reinstall
+6. **After an app upgrade,** the system build tools (patch, compilers) reinstall
    automatically on start (in the background). If a compile fails on a missing
    system tool right after an upgrade, wait a minute and retry — don't apt-install
    by hand (it'd just be wiped by the next upgrade).

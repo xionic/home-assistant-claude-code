@@ -1,6 +1,6 @@
 {
   "name": "esphome",
-  "description": "Validate, compile, flash (OTA), and stream logs for ESPHome devices from chat, using the bundled esphome CLI against your ESPHome add-on's config folder",
+  "description": "Validate, compile, flash (OTA), and stream logs for ESPHome devices from chat, using the bundled esphome CLI against your ESPHome app's config folder",
   "version": "1.6.0",
   "author": {
     "name": "claude-code-ui"
