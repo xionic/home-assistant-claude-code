@@ -1016,10 +1016,18 @@ function hideThinking() {
 }
 
 // ── Model dropdown ───────────────────────────────────────────────────────────
+// The dropdown in index.html carries the current models; these labels also cover
+// older ids so a stored choice — or a model the SDK reports back — still renders
+// with a friendly name via ensureModelOption() instead of a raw id string.
 const MODEL_LABELS = {
-  'claude-opus-4-8': 'Opus 4.8',
-  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-opus-5': 'Opus 5',
+  'claude-sonnet-5': 'Sonnet 5',
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-7': 'Opus 4.7',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
 };
 // Real, cache-inclusive context-window usage reported by the SDK
 // (query.getContextUsage), pushed after every turn. Drives the hint above the

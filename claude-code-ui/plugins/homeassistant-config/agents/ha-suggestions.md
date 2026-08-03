@@ -1,6 +1,6 @@
 ---
 description: Smart home improvement advisor for automations, scenes, and device recommendations
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools:
   - Read
   - Grep

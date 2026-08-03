@@ -47,13 +47,37 @@ SSH key: `~/.ssh/ha_claude`. Host: `192.168.1.10:222`. User: `root` (HA SSH app 
 
 To bust Docker layer cache for shell script changes, bump `ARG SCRIPTS_VER` in the Dockerfile.
 
+## Releasing
+
+**Do not bump `version:` on every commit.** Home Assistant reads that value
+straight off `master` to decide whether an update is available, so bumping it
+tells every installed user there's a new release — and if CI hasn't published a
+matching image tag yet, their update *fails*. The version and the published
+image must stay in lockstep.
+
+The rule is therefore: **`version:` in `config.yaml` names the latest released
+image; a bump *is* the release.** Ordinary commits leave it alone. CI enforces
+this — it runs on every push touching `claude-code-ui/**`, but the `version` job
+checks GHCR and skips the build entirely when that version is already published,
+so a published tag is never silently overwritten.
+
+Day to day, land changes with the version untouched and add them under
+`## Unreleased` at the top of `CHANGELOG.md`. To cut a release:
+
+1. Rename the `## Unreleased` heading to the new version number
+2. Bump `version:` in `config.yaml` to match
+3. Commit and push — CI sees the new version and publishes it
+
+`workflow_dispatch` takes a `force` input to rebuild and overwrite an
+already-published version; use it only to repair a broken publish.
+
 ## Prebuilt images (CI)
 
 `.github/workflows/build.yml` builds a multi-arch image with the Home Assistant
 `builder` composite actions (`prepare-multi-arch-matrix` → `build-image` →
 `publish-multi-arch-manifest`, pinned to `2026.06.0`) and pushes it to
-`ghcr.io/xionic/claude-code-ui:<version>` + `:latest` on pushes touching
-`claude-code-ui/**` (and via workflow_dispatch). The new builder does **not** read
+`ghcr.io/xionic/claude-code-ui:<version>` + `:latest` — but only when that
+version isn't already published (see **Releasing** above). The new builder does **not** read
 `build.yaml`, so the workflow passes `BUILD_FROM` per arch. Store installs pull
 this image (via the `image:` key in config.yaml); local dev builds from source
 after the `sed` strip above. **One-time GHCR setup:** after the first successful

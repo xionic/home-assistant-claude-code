@@ -3,13 +3,25 @@ name: Build app image
 # Builds and publishes a multi-arch prebuilt image to GHCR so users who install
 # from the repository don't have to build the (Debian + Node SDK + …) image on
 # their own hardware. The image is tagged with the app version from
-# config.yaml, plus `latest`. Runs on pushes that touch the app, and manually.
+# config.yaml, plus `latest`.
+#
+# RELEASING: the version in config.yaml is what publishes. Home Assistant reads
+# that value straight off master to decide whether an update is available, so it
+# must always name an image that actually exists in GHCR. This workflow runs on
+# every push touching the app but only *publishes* when config.yaml carries a
+# version that hasn't been published yet — ordinary commits are a no-op, and a
+# release is a deliberate version bump. See claude-code-ui/CLAUDE.md § Releasing.
 on:
   push:
     branches: [master]
     paths:
       - "claude-code-ui/**"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and overwrite the image even if this version is already published"
+        type: boolean
+        default: false
 
 env:
   ARCHITECTURES: '["amd64", "aarch64"]'
@@ -21,21 +33,43 @@ permissions:
 
 jobs:
   version:
-    name: Read app version
+    name: Resolve app version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
       - id: v
+        env:
+          FORCE: ${{ inputs.force }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(grep '^version:' claude-code-ui/config.yaml | head -1 | cut -d'"' -f2)
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "App version: ${VERSION}"
+
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # A published version is immutable — an ordinary commit must never
+          # silently replace the image users already installed. Publish only
+          # when config.yaml names a version GHCR doesn't have yet.
+          if [ "${FORCE}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Forced rebuild of ${VERSION}."
+          elif docker manifest inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version ${VERSION} is already published — skipping. Bump the version in config.yaml to cut a release."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Releasing ${VERSION}."
+          fi
 
   init:
     name: Prepare build matrix
     needs: version
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -51,6 +85,7 @@ jobs:
   build:
     name: Build ${{ matrix.arch }}
     needs: [version, init]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -80,6 +115,7 @@ jobs:
   manifest:
     name: Publish multi-arch manifest
     needs: [version, init, build]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       packages: write

@@ -1,3 +1,7 @@
+## 1.9.3
+- Model picker updated to the current Claude models: **Opus 5** and **Sonnet 5** replace Opus 4.8 and Sonnet 4.6 (Haiku 4.5 is unchanged). If you'd already picked an older model it keeps working and still shows by name — switch in **Settings → Model** to move up
+- The Home Assistant suggestions subagent now runs on Sonnet 5
+
 ## 1.9.2
 - Wording brought in line with Home Assistant's current terminology — add-ons are **apps**, and the install steps in the README now match the real path (**Settings → Apps → Install app → ⋮ → Repositories**). Thanks to Sir_Goodenough on the community forum for flagging it
 - Folder mappings updated to Home Assistant's current names (`homeassistant_config` and `all_app_configs`), replacing the deprecated `config` / `all_addon_configs`. Nothing moves inside the app — Home Assistant's config stays at `/config` and other apps' configs at `/addon_configs`. **Now requires Supervisor 2026.07 or newer**
