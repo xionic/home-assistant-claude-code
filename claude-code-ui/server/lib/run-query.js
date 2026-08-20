@@ -18,6 +18,7 @@ import { listSessions, saveActive, isQuestionAnswer, truncateOutput } from './se
 import { hooksFor, makeCanUseTool } from './permissions.js';
 import { askQuestion } from './dialogs.js';
 import { refreshHaLinks } from './ha-links.js';
+import { usableSlashCommands } from './slash-commands.js';
 import * as autoContinue from './auto-continue.js';
 
 /** How long the SDK may go quiet before the log says so. */
@@ -143,9 +144,15 @@ export async function runQuery(ws, state, { text, permissionMode, model, effort,
         saveActive();
         broadcast({ type: 'session', id: event.session_id });
         if (event.model) broadcast({ type: 'model', model: event.model });
-        if (Array.isArray(event.slash_commands)) {
-          runtime.cachedSlashCommands = event.slash_commands;
-          broadcast({ type: 'slash_commands', commands: runtime.cachedSlashCommands });
+        // Terminal-only commands (/exit, /statusline …) are dropped here rather
+        // than in the browser, so there is one place that knows this is a
+        // remote UI — see slash-commands.js.
+        const commands = usableSlashCommands(event);
+        if (commands) {
+          runtime.cachedSlashCommands = commands;
+          broadcast({ type: 'slash_commands', commands });
+          const hidden = event.slash_commands.length - commands.length;
+          vlog(`slash commands: ${commands.length} offered${hidden ? `, ${hidden} terminal-only hidden` : ''}`);
         }
         vlog(`init: session=${event.session_id} model=${event.model}`);
 
