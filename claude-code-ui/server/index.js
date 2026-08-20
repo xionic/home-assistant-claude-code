@@ -15,6 +15,17 @@ const CLAUDE_CONFIG_DIR = process.env.ANTHROPIC_CONFIG_DIR || '/data/.config/cla
 const DEBUG_MODE = process.env.DEBUG_MODE === 'true';
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'ask';
 
+// The app's own persistent volume and its static assets. Both are fixed by the
+// container layout in production; they are env-overridable so the server can be
+// booted against a scratch directory under test, the same way WORK_DIR and
+// PLUGIN_DIR already are.
+const DATA_DIR = process.env.DATA_DIR || '/data';
+const FRONTEND_DIR = process.env.FRONTEND_DIR || '/opt/frontend';
+
+// Supervisor base URL. Matches the HA_SUPERVISOR_URL override that
+// scripts/lib/ha-rest.cjs already uses, so a fake Supervisor can stand in.
+const SUPERVISOR_URL = process.env.HA_SUPERVISOR_URL || 'http://supervisor';
+
 // Optional ESPHome capability. When enabled we load an extra local plugin (the
 // esphome skill) and exempt the ESPHome app's config folder from the
 // addon-configs guard so the esphome CLI can work on it.
@@ -62,7 +73,7 @@ function describeSuggestions(suggestions) {
 // has enabled auto-continue, we persist that and resume the conversation
 // automatically once the limit resets. Only the 5-hour limit is auto-resumed —
 // waiting out a 7-day limit unattended is rarely what anyone wants.
-const AUTO_CONTINUE_FILE = path.join('/data', 'auto-continue.json');
+const AUTO_CONTINUE_FILE = path.join(DATA_DIR, 'auto-continue.json');
 const AUTO_CONTINUE_BUFFER_MS = 15000;    // resume a little past resetsAt, to be safe
 const AUTO_CONTINUE_MAX_ATTEMPTS = 3;     // consecutive resumes before giving up
 const AUTO_CONTINUE_PROMPT =
@@ -237,13 +248,13 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-app.use(express.static('/opt/frontend'));
+app.use(express.static(FRONTEND_DIR));
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 // Files the user attaches are written here and referenced by absolute path in the
 // prompt; Claude reads them with the Read tool (which sees images/PDFs natively).
 // Also served read-only so the UI can show thumbnails.
-const UPLOAD_DIR = '/data/uploads';
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 try { mkdirSync(UPLOAD_DIR, { recursive: true }); } catch {}
 app.use('/uploads', express.static(UPLOAD_DIR));
 
@@ -553,7 +564,7 @@ if (DEBUG_MODE) app.get('/diag/sessions', async (_req, res) => {
   res.json(out);
 });
 
-app.get('*', (_req, res) => res.sendFile('/opt/frontend/index.html'));
+app.get('*', (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'index.html')));
 
 // ── MCP state hygiene ─────────────────────────────────────────────────────────
 // The Claude Code CLI persists MCP servers into ~/.claude.json (globally and
@@ -713,7 +724,7 @@ function broadcast(msg) {
 // uses, so sessions are interchangeable. We keep only a tiny pointer to the
 // "active" session on /data; transcripts are always read from the store.
 const STORE_DIR = path.join(process.env.HOME || '/data/home', '.claude', 'projects', WORK_DIR.replace(/\//g, '-'));
-const ACTIVE_FILE = path.join('/data', 'active-session.json');
+const ACTIVE_FILE = path.join(DATA_DIR, 'active-session.json');
 let activeSessionId = null;
 let activeQuery = null;        // AbortController for the in-flight query (global)
 
@@ -960,7 +971,7 @@ async function refreshHaLinks() {
   const tok = process.env.SUPERVISOR_TOKEN;
   if (!tok) return;
   try {
-    const res = await fetch('http://supervisor/core/api/states', {
+    const res = await fetch(`${SUPERVISOR_URL}/core/api/states`, {
       headers: { Authorization: `Bearer ${tok}` },
     });
     if (!res.ok) { vlog(`ha links: /states returned ${res.status}`); return; }

@@ -18,7 +18,7 @@
 # All of them return plain text coloured with ANSI escapes, which is stripped
 # here unless --raw is given. Auth is automatic via $SUPERVISOR_TOKEN.
 
-SUPERVISOR_URL="http://supervisor"
+SUPERVISOR_URL="${HA_SUPERVISOR_URL:-http://supervisor}"
 SOURCE="core"
 LINES=100
 ERRORS_ONLY=false

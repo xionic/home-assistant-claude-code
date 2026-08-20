@@ -14,7 +14,7 @@
 #   ha-context --full   Include entity ID listings per domain
 #   ha-context --help   Show usage
 
-SUPERVISOR_URL="http://supervisor"
+SUPERVISOR_URL="${HA_SUPERVISOR_URL:-http://supervisor}"
 OUTPUT_FILE="${HOME}/.claude/ha-context.md"
 FULL_MODE=false
 
