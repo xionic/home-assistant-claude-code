@@ -226,6 +226,8 @@
     </form>
   </div>
   <script src="marked.min.js"></script>
-  <script src="app.js"></script>
+  <!-- marked is a classic script (it sets a global); app.js is an ES module,
+       which the browser loads with its own imports. No build step. -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>
