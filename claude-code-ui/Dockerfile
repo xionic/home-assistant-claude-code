@@ -66,7 +66,7 @@ WORKDIR /config
 
 # Copy application files
 # (bump SCRIPTS_VER to force Docker layer re-copy on next build)
-ARG SCRIPTS_VER=22
+ARG SCRIPTS_VER=25
 COPY server/index.js /opt/server/index.js
 COPY frontend/ /opt/frontend/
 COPY plugins/ /opt/plugins/
@@ -77,12 +77,17 @@ RUN chmod +x /run.sh \
     && chmod +x /opt/scripts/*.sh \
     && chmod +x /opt/plugins/homeassistant-config/hooks/*.sh
 
-# ha-lovelace / ha-stats / ha-history: Node WebSocket CLIs. Each wrapper sets
-# NODE_PATH so the bundled `ws` module (from the server deps) resolves.
-RUN for tool in ha-lovelace ha-stats ha-history; do \
-        printf '#!/bin/bash\nexec env NODE_PATH=/opt/server/node_modules node /opt/scripts/%s.cjs "$@"\n' "$tool" \
-            > "/usr/local/bin/$tool" \
-        && chmod +x "/usr/local/bin/$tool"; \
+# `ha-tools` — this app's HA helpers behind one entry point: history / stats /
+# lovelace (Node, over the WebSocket API), logs (Supervisor journald — needed
+# because HA 2025.11 removed /config/home-assistant.log and the Core
+# `/api/error_log` endpoint), and a `ws` passthrough to ha-ws-client.
+#
+# Each subcommand keeps its own name as a symlink back to the dispatcher, which
+# reads argv[0] to pick the subcommand — so `ha-logs` and `ha-tools logs` are
+# one command, not two that can drift apart.
+RUN ln -sf /opt/scripts/ha-tools.sh /usr/local/bin/ha-tools \
+    && for tool in ha-history ha-stats ha-timeline ha-lovelace ha-logs; do \
+        ln -sf /opt/scripts/ha-tools.sh "/usr/local/bin/$tool"; \
     done
 
 # `esphome` command — thin wrapper over the venv the app installs into /data

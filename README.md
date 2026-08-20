@@ -70,8 +70,14 @@ Claude uses pre-installed CLI tools (via Bash) plus the Supervisor REST API, all
 authenticated automatically with `$SUPERVISOR_TOKEN`:
 
 - **`ha-ws-client`** — entity states, service calls, Jinja templates, and registry search over the HA WebSocket API.
-- **`ha-history`** / **`ha-stats`** — history and long-term statistics over a date range (`--days`, `--from`, `--to`).
-- **`ha-lovelace`** — Lovelace dashboards: `create`, `list`, `get`, `save`, `delete` over the WebSocket API (the REST `/api/lovelace/*` endpoints don't exist on modern HA).
+- **`ha-tools`** — this app's own helpers, under one command (each is also available under its own name):
+  - `ha-tools timeline` (`ha-timeline`) — several entities' state changes merged onto one clock (`--between 22:00-07:00`), which is how most automation timing bugs get found.
+  - `ha-tools history` / `ha-tools stats` (`ha-history`, `ha-stats`) — history and long-term statistics over a date range (`--days`, `--from`, `--to`).
+  - `ha-tools automation` — what HA currently has loaded, and the matching block in `automations.yaml` with line numbers.
+  - `ha-tools config-check` / `ha-tools reload` — validate config before reloading, then reload without restarting HA.
+  - `ha-tools trace-watch` — wait for an automation to actually fire and report what happened, including runs its conditions blocked.
+  - `ha-tools lovelace` (`ha-lovelace`) — Lovelace dashboards: `create`, `list`, `get`, `save`, `delete` over the WebSocket API (the REST `/api/lovelace/*` endpoints don't exist on modern HA).
+  - `ha-tools logs` (`ha-logs`) — the Core, Supervisor, host, or any app's log, straight from the journal.
 - **YAML editing** — Claude can read and edit your `/config` files directly.
 
 These run as ordinary Bash calls, so they authenticate cleanly **and** respect
@@ -88,8 +94,11 @@ easily.
 ```
 browser  ⇄  WebSocket  ⇄  server/index.js  (Node + @anthropic-ai/claude-agent-sdk)
                                  ├── ha-ws-client                  (HA WebSocket API)
-                                 ├── ha-history / ha-stats         (date-range history & stats)
-                                 ├── ha-lovelace                   (dashboards)
+                                 ├── ha-tools timeline             (multi-entity event timeline)
+                                 ├── ha-tools history / stats      (date-range history & stats)
+                                 ├── ha-tools automation           (loaded config, YAML, traces)
+                                 ├── ha-tools lovelace             (dashboards)
+                                 ├── ha-tools logs                 (journald, via Supervisor)
                                  ├── plugins/homeassistant-config  (skill + YAML validation hook)
                                  └── Claude Code session store     (~/.claude/projects/*.jsonl)
 

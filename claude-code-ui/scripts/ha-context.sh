@@ -64,6 +64,32 @@ ha_api_call() {
     api_call "core/api/${endpoint}"
 }
 
+# Supervisor journald log endpoints (core/logs, host/logs, addons/self/logs, …).
+# These return plain text rather than JSON, coloured with ANSI escapes — strip
+# those or the codes end up in the generated markdown. `Accept: text/plain` is
+# what Supervisor serves by default today; sending it explicitly keeps this
+# independent of that default.
+#
+# Returns non-zero on any non-200 so the caller can tell "no errors logged" from
+# "the endpoint moved". Error bodies are short, plausible-looking text, so a
+# caller checking only for empty output would print them as if they were logs.
+logs_call() {
+    local endpoint="$1" code
+    local tmp
+    tmp=$(mktemp)
+    code=$(curl -s -m 10 -o "$tmp" -w '%{http_code}' \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Accept: text/plain" \
+        "${SUPERVISOR_URL}/${endpoint}" 2>/dev/null)
+    if [ "$code" = "200" ]; then
+        sed 's/\x1b\[[0-9;]*m//g' "$tmp"
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
 check_prerequisites() {
     if [ -z "$SUPERVISOR_TOKEN" ]; then
         echo "Error: SUPERVISOR_TOKEN not set. This script must run inside a Home Assistant app." >&2
@@ -193,17 +219,32 @@ section_addons() {
     ' 2>/dev/null | sort
 }
 
+# HA 2025.11 removed /config/home-assistant.log on HAOS/Supervised installs and
+# moved Core logging to the systemd journal. The Core REST endpoint this used to
+# call, `/api/error_log`, went with it and now 404s (undocumented — it's still in
+# the dev docs). Read the journal through the Supervisor instead; `hassio_api`
+# in config.yaml is what grants access.
 section_recent_errors() {
-    local error_log
-    error_log=$(ha_api_call "error_log")
+    local log_text
+    # The old check only rejected empty output, so once the endpoint began
+    # 404ing its body ("404: Not Found") was pasted in verbatim as though it
+    # were log content — the failure read as data and went unnoticed. Fail on
+    # the status code instead, and say so out loud.
+    if ! log_text=$(logs_call "core/logs?lines=200"); then
+        echo "Unable to retrieve the Home Assistant log (\`core/logs\`). Try \`ha-logs\` for details."
+        return
+    fi
 
-    if [ -z "$error_log" ] || [ "$error_log" = "\"\"" ]; then
-        echo "No recent errors."
+    local errors
+    errors=$(echo "$log_text" | grep -E ' (ERROR|WARNING) ' | tail -20 | cut -c1-200)
+
+    if [ -z "$errors" ]; then
+        echo "No recent errors or warnings."
         return
     fi
 
     echo '```'
-    echo "$error_log" | tail -20 | cut -c1-200
+    echo "$errors"
     echo '```'
 }
 
@@ -276,6 +317,10 @@ pre-installed CLI tools via Bash. Authentication is automatic via
 `$SUPERVISOR_TOKEN` — **never ask the user for a token**.
 
 ```bash
+# `ha-tools --help` lists every HA command here. ha-history / ha-stats /
+# ha-lovelace / ha-logs below are also its subcommands (`ha-tools history …`);
+# the two spellings are the same command.
+
 # ha-ws-client — entity states, service calls, templates, registry (WebSocket API)
 ha-ws-client state sensor.car_12v_battery_voltage --json
 ha-ws-client states-filter "sensor.*" --json
@@ -289,12 +334,39 @@ ha-history sensor.temperature --days 7        # state-change history, last 7 day
 ha-history sensor.temperature --from 2026-06-01 --to 2026-06-08 --full
 ha-stats sensor.energy_cost --days 14         # long-term stats, last 14 days (hourly)
 ha-stats sensor.energy_cost --from 2026-06-01 --period day
-# (empty result just means no recorded data in that window.)
+# (empty result just means no recorded data in that window; --format tsv for flat
+#  rows in local time.)
+
+# MULTIPLE entities on one clock — use this for "what happened, in what order?"
+# instead of querying each entity and merging by hand:
+ha-timeline light.hall binary_sensor.stairs --days 3
+ha-timeline light.hall binary_sensor.stairs --days 3 --between 22:00-07:00
+
+# Automations: what's loaded, what's on disk, and safe editing
+ha-tools automation list                      # entity_id, id, alias, state
+ha-tools automation show automation.x         # the config HA has loaded right now
+ha-tools automation yaml automation.x         # its automations.yaml block, numbered
+ha-tools config-check                         # validate BEFORE reloading (exit 1 = invalid)
+ha-tools reload                               # reload automations (or: reload all)
+ha-tools trace-watch automation.x --timeout 2h  # block until it really fires
+
+# Times from ha-tools are in HA's timezone with an offset (2026-08-12 23:27:42+01:00);
+# the container clock is UTC. Pass --utc for UTC. Don't hand-convert epoch floats.
 
 # ha-ws-client also has fixed-window helpers for quick checks:
 ha-ws-client history sensor.temperature       # recent state-change history
 ha-ws-client stats sensor.temperature         # recent long-term statistics
 ha-ws-client logbook                          # recent logbook entries
+
+# ha-logs — Home Assistant logs. There is NO /config/home-assistant.log and the
+# REST endpoint /api/error_log returns 404 (both removed in HA 2025.11 when Core
+# logging moved to the systemd journal) — do not try to read either.
+ha-logs                                       # last 100 lines of the Core log
+ha-logs --errors -n 500                       # errors/warnings from a wider window
+ha-logs self -n 200                           # this app's own log
+ha-logs supervisor --errors                   # Supervisor log
+ha-logs app_core_mosquitto -n 50              # another app (see: ha-logs --units)
+#   -n is a line budget applied BEFORE --errors, so widen it when hunting.
 
 # ha-lovelace — dashboards (WebSocket; REST /api/lovelace/* returns 404, do NOT use it)
 ha-lovelace list                              # list storage-mode dashboards

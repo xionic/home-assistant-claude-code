@@ -346,11 +346,30 @@ actions:
 **IMPORTANT — tool selection rules:**
 - Use **ha-ws-client** for entity states, service calls, template rendering, registry search, traces, and recent history.
 - Use **ha-history** / **ha-stats** when you need history or long-term statistics over a specific date range (`--days N`, `--from`, `--to`).
+- Use **ha-timeline** when the question involves **more than one entity** — "what happened, in what order?". Do not fetch each entity separately and merge by hand.
+- Use **ha-tools automation show** to see the config HA currently has loaded, and **ha-tools automation yaml** to see that automation's block in `automations.yaml` with line numbers.
+- After editing YAML: **`ha-tools config-check`** (exits non-zero if invalid), then **`ha-tools reload`**. Never hand-roll a `curl` for either.
+- Use **ha-tools trace-watch** to verify a trigger you changed actually fires. `automation.trigger` skips triggers and conditions, so it proves nothing about the thing you edited.
 - Use **ha-lovelace** for dashboard config (list / get / save). Lovelace lives only on the WebSocket API — the REST endpoints `/api/lovelace/config` and `/api/lovelace/dashboards` return **404** and must not be used.
 - For **YAML-mode dashboards**, edit the dashboard `.yaml` files directly in `/config`.
 - Never ask the user for a long-lived access token — `$SUPERVISOR_TOKEN` is available automatically and is sufficient for everything above.
 
 All tools authenticate automatically using `$SUPERVISOR_TOKEN` — no additional setup required.
+
+`ha-history`, `ha-stats`, `ha-timeline`, `ha-lovelace` and `ha-logs` are also
+subcommands of a single **`ha-tools`** command (`ha-tools history …`,
+`ha-tools logs …`, and `ha-tools ws …` for ha-ws-client). Both spellings are the
+same command — use whichever reads better. **`ha-tools --help`** lists every HA
+command available in this container, which is the quickest way to check what you
+have.
+
+**Times.** Every ha-tools command prints times in Home Assistant's own timezone
+with an explicit offset (`2026-08-12 23:27:42+01:00`). The container clock is
+UTC, so do not assume a bare timestamp from anywhere else is local. Pass `--utc`
+if you want UTC. Note that other sources still differ: `last_triggered` in raw
+state attributes is UTC ISO, `ha-history --format json` keeps HA's raw epoch
+floats, and templates using `now()` return local — convert via a ha-tools command
+rather than doing the arithmetic yourself.
 
 ### ⚠️ Never edit `.storage` or the database directly
 
@@ -438,6 +457,16 @@ ha-stats sensor.energy_cost --days 14                        # last 14 days, hou
 ha-stats sensor.energy_cost --from 2026-06-01 --period day   # daily buckets
 #   ha-history flags: --days N | --from <ISO|YYYY-MM-DD> | --to <ISO> | --full
 #   ha-stats   flags: --days N | --from | --to | --period 5minute|hour|day|week|month
+#   both also take: --format json|tsv (tsv is flat rows in local time) | --utc
+
+# SEVERAL entities on one clock — the main tool for "what happened, in order?".
+# Prefer this over calling ha-history per entity and merging by hand.
+ha-timeline light.hall binary_sensor.stairs --days 3
+ha-timeline light.hall binary_sensor.stairs --days 3 --between 22:00-07:00
+ha-timeline light.hall --days 1 --format tsv                 # or --format json
+# Output is one row per event, already merged and sorted, in HA's timezone:
+#   08-12 23:27:42  light.hall            on
+#   08-12 23:30:17  binary_sensor.stairs  off
 
 # Search entity/device/area registry
 ha-ws-client entities humidity --json
@@ -454,6 +483,78 @@ ha-ws-client services --json
 # Diagnostics
 ha-ws-client compare sensor.temp_bedroom sensor.temp_living_room
 ```
+
+### Editing an automation safely (check → reload → verify)
+
+```bash
+# 1. See what HA has loaded right now, and where it lives on disk
+ha-tools automation list                                  # entity_id, id, alias, state
+ha-tools automation show automation.hall_light_off        # the loaded config
+ha-tools automation yaml automation.hall_light_off        # its YAML block, numbered
+
+# 2. Edit the YAML (Edit tool, or Read with offset/limit for a big file)
+
+# 3. Validate BEFORE reloading — exits non-zero if the config is broken
+ha-tools config-check
+
+# 4. Reload (no restart needed)
+ha-tools reload                    # automations (default)
+ha-tools reload script             # or another domain
+ha-tools reload all                # everything reloadable
+
+# 5. Confirm the reload landed, then verify it actually works
+ha-tools automation show automation.hall_light_off        # re-read the loaded config
+ha-tools trace-watch automation.hall_light_off --timeout 2h
+```
+
+`automation show` reports a `schema` field (`plural` / `singular`). Home Assistant
+moved from `trigger:`/`condition:`/`action:` to `triggers:`/`conditions:`/`actions:`,
+and both spellings are still valid on disk — match whichever the automation
+already uses when you edit it.
+
+`trace-watch` **blocks** until the automation next fires, then prints the trace
+summary and exits 0; it exits 1 if the timeout passes with no firing. It reports
+runs blocked by their conditions too (`script_execution: failed_conditions`),
+which is usually the answer you want. Always give it a `--timeout` you're willing
+to wait for, and tell the user you're waiting.
+
+### Logs (ha-logs) — for "why did X fail?"
+
+**There is no `/config/home-assistant.log`.** HA 2025.11 removed it on HAOS and
+Supervised installs and moved Core logging to the systemd journal. The Core REST
+endpoint `/api/error_log` was deleted at the same time and now returns **404** —
+it is still listed in the HA developer docs, so it looks available and is not.
+**Do not try to read either.** Use `ha-logs`:
+
+```bash
+ha-logs                             # last 100 lines of the Core log
+ha-logs --errors                    # only ERROR/WARNING/CRITICAL/Traceback lines
+ha-logs --errors -n 1000            # widen the window before filtering
+ha-logs self -n 200                 # THIS app's own log (the Claude Code UI server)
+ha-logs supervisor --errors         # Supervisor
+ha-logs host -n 50                  # host / systemd
+ha-logs app_core_mosquitto -n 50    # another app's log, by journal identifier
+ha-logs --units                     # list every identifier you can read
+ha-logs core --boot 0 --errors      # only since the current boot (--boots lists ids)
+ha-logs --follow                    # stream live (needs a timeout — it never ends)
+```
+
+Notes that matter when reading the output:
+
+- **`-n` is a line budget, not a result count.** It fetches N lines and *then*
+  filters, so `--errors -n 100` often returns nothing on a healthy system.
+  Reach for `-n 500`/`-n 1000` when hunting a specific failure.
+- **Only the Core/host/Supervisor logs are timestamp-first**
+  (`2026-08-12 19:36:02.497 WARNING (MainThread) [homeassistant...]`). An *app's*
+  log is raw container stdout in whatever format that app uses — this one emits
+  `[<ISO8601>] INFO …`. Don't assume a layout when grepping.
+- Multi-line tracebacks arrive as separate lines; `--errors` matches the
+  `Traceback` line, so widen with `-n` and read the surrounding context.
+- `--follow` streams forever — always wrap it: `timeout 30 ha-logs --follow`.
+
+For an automation that misbehaved, prefer the **trace** (`ha-ws-client`) over the
+log — it shows the actual step-by-step evaluation. Use logs for integration
+errors, startup failures, and anything that never reached a trace.
 
 ### REST API via supervisor proxy (curl — use for dashboard editing)
 

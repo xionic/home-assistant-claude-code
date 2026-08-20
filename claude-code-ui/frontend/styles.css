@@ -26,6 +26,21 @@
 
 html, body { height: 100%; }
 
+/* The app is a fixed frame with one scrolling region inside it (.messages), and
+   on a mobile *browser* both halves of that need saying explicitly.
+   `overflow: hidden` stops the document itself from scrolling: in the Home
+   Assistant app the ingress iframe is sized to fit, but in a browser the URL bar
+   makes the visual viewport shorter than 100% for part of the time, and the few
+   px of slack were enough for the whole page — our header and HA's own menu
+   above it — to scroll away, with no way back short of scrolling the chat to the
+   very top. `overscroll-behavior: none` is the other half: without it, a swipe
+   that carries on past the end of the transcript chains up to the HA page behind
+   us and scrolls that instead. */
+html, body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
@@ -39,8 +54,15 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Dynamic viewport height where it's supported: on a mobile browser the URL
+     bar shrinking and growing changes the usable height, and 100% (resolved
+     against a taller initial containing block) leaves the composer sitting
+     below the fold. */
+  height: 100dvh;
+  max-height: 100dvh;
   max-width: 860px;
   margin: 0 auto;
+  overflow: hidden;
 }
 
 /* ── Header ── */
@@ -179,6 +201,38 @@ body {
   padding: 4px 10px; font-size: 12px;
 }
 .ac-banner-cancel:hover { color: var(--text); border-color: var(--text-muted); }
+.ac-banner-cancel.hidden { display: none; }
+
+/* The banner's affirmative action — "Resume automatically" on the offer form,
+   "Answer" on the question strip. Deliberately louder than Cancel: it's the
+   thing you came to the banner to press. */
+.ac-banner-action {
+  flex: none; cursor: pointer;
+  background: #1e2a3a; color: #7fb0dd;
+  border: 1px solid #2a4560; border-radius: var(--radius-xs);
+  padding: 4px 10px; font-size: 12px; white-space: nowrap;
+}
+.ac-banner-action:hover { opacity: .85; }
+.ac-banner-action:disabled { opacity: .45; cursor: default; }
+.ac-banner-action.hidden { display: none; }
+/* Nothing is scheduled — this is information plus an offer, not a countdown to
+   something already in hand, so it doesn't wear the active accent. */
+.ac-banner-offer { border-color: var(--border); background: var(--surface-2); }
+
+/* ── Something is waiting on you ── */
+/* The persistent half of a question or permission request: the popup can be
+   closed to read the chat first, and this is what brings it back. */
+.question-strip {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 12px 8px; padding: 9px 12px;
+  background: var(--tool-bg); border: 1px solid var(--tool-border);
+  border-radius: var(--radius-sm); font-size: 13px;
+}
+.question-strip.hidden { display: none; }
+.question-strip-text {
+  flex: 1 1 auto; color: #7fb0dd;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* ── Sessions panel ── */
 .sessions-panel {
@@ -274,9 +328,23 @@ mark.find-hit {
 mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
 
 /* ── Message list ── */
+/* The positioned ancestor for the prompt arrows. Not .messages itself: an
+   absolutely-positioned child of a scroll container scrolls with its content,
+   so the arrows would slide off the top with everything else. */
+.chat-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
+  /* Keep a swipe past the end of the transcript from scrolling the Home
+     Assistant page behind this one (see the note on html, body above). */
+  overscroll-behavior: contain;
   padding: 16px 16px 8px;
   display: flex;
   flex-direction: column;
@@ -286,6 +354,50 @@ mark.find-hit.find-current { background: #d8a93a; color: #1a1a1a; }
      view from the top to the bottom. Deliberate jumps — e.g. the search-match
      scrollIntoView — pass `behavior: 'smooth'` themselves. */
 }
+
+/* ── Prompt navigation (↑/↓) ── */
+/* Step through your own messages in a long chat. These float over the
+   transcript, so they have to read as controls against whatever happens to be
+   behind them — a solid fill and a real border, not a wash of opacity. */
+.prompt-nav {
+  position: absolute; right: 12px; z-index: 6;
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1; cursor: pointer;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgba(0,0,0,.45);
+  opacity: .85; transition: opacity .18s ease, border-color .18s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.prompt-nav:hover { opacity: 1; border-color: var(--accent); }
+.prompt-nav:focus-visible { opacity: 1; border-color: var(--accent); outline: none; }
+.prompt-nav.hidden { display: none; }
+.prompt-nav-up   { top: 12px; }
+.prompt-nav-down { bottom: 12px; }
+@media (prefers-reduced-motion: reduce) { .prompt-nav { transition: none; } }
+
+/* Briefly mark whatever a jump landed on, so it's easy to spot. */
+.messages .flash { animation: flash-target 1.6s ease-out; }
+@keyframes flash-target {
+  0%, 55% { box-shadow: 0 0 0 2px var(--accent); }
+  100%    { box-shadow: 0 0 0 2px transparent; }
+}
+
+/* ── Usage-limit notice ── */
+/* Where the conversation actually broke off, and whether anything is going to
+   pick it up. The banner above the composer stays current as the clock moves;
+   this is the part still here after a reload. */
+.limit-notice {
+  align-self: stretch; flex-shrink: 0;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 3px solid #d8a93a;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px; font-size: 13px; color: var(--text-muted);
+}
+.limit-notice-head { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.limit-notice-ok  { margin-top: 6px; color: #7fcc8a; }
+.limit-notice-off { margin-top: 6px; color: var(--text-muted); }
 
 .messages::-webkit-scrollbar          { width: 4px; }
 .messages::-webkit-scrollbar-track    { background: transparent; }
@@ -486,6 +598,20 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 }
 .tool-call-result.result-error { color: var(--error-text); }
 
+/* An answered question, not a failed call — see the server's
+   formatQuestionDenial for why it arrives looking like one. */
+.tool-call-answer-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+  text-transform: uppercase; color: #7ba3d4;
+  margin-top: 6px;
+}
+
+/* AskUserQuestion's input is addressed to a person, so it reads as prose
+   rather than as the JSON blob every other tool call gets. */
+.tool-call-questions { font-size: 13px; }
+.tool-call-q { font-weight: 500; margin: 4px 0 2px; }
+.tool-call-q-opts { margin: 0 0 6px 18px; color: var(--text-muted); font-size: 12px; }
+
 /* ── Tool group (collapses a run of consecutive tool calls) ── */
 .tool-group {
   align-self: flex-start;
@@ -506,6 +632,15 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   transition: background 0.1s;
 }
 .tool-group-header.hidden { display: none; }
+/* What the run is doing right now, or what it did — the reason folding a run
+   away while it is still growing costs no information you were watching. */
+.tool-group-summary {
+  flex: 1; min-width: 0;
+  font-size: 11px; color: var(--text-muted);
+  font-family: monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-group-header.has-error .tool-group-count { color: var(--error-text); }
 .tool-group-header:hover { background: rgba(255,255,255,.04); }
 .tool-group-icon { font-size: 11px; opacity: .5; flex-shrink: 0; }
 .tool-group-count {
@@ -605,7 +740,8 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   max-height: 80vh; overflow-y: auto;
 }
 
-.perm-header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* The spacing below belongs to .card-head, which wraps this. */
+.perm-header { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 
 .perm-tool-chip {
   font-size: 10px; font-weight: 700;
@@ -634,6 +770,7 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   cursor: pointer; transition: opacity 0.15s;
 }
 .btn:hover { opacity: 0.85; }
+.btn.hidden { display: none; }
 
 .btn-allow {
   background: #1e3a1e; color: #7fcc8a; border-color: #2a5a2a;
@@ -655,10 +792,33 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 .perm-always-hint.hidden { display: none; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ── Card head (shared by the permission card and the question dialog) ── */
+.card-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px;
+}
+.card-head-right { display: flex; align-items: center; gap: 8px; flex: none; }
+/* Set the card aside without answering it. The request stays pending, so this
+   is not a Cancel and must not read like one. */
+.card-later {
+  flex: none; cursor: pointer; line-height: 1;
+  background: none; border: none; color: var(--text-muted);
+  font-size: 15px; padding: 2px 4px; border-radius: var(--radius-xs);
+}
+.card-later:hover { color: var(--text); background: var(--surface-2); }
+.dialog-progress {
+  font-size: 11px; color: var(--text-muted);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 2px 8px;
+}
+.dialog-progress.hidden { display: none; }
+
 /* ── User dialog (AskUserQuestion) ── */
 .dialog-card { max-width: 540px; }
-.dialog-body { display: flex; flex-direction: column; gap: 18px; margin: 14px 0 18px; }
+.dialog-body { margin: 4px 0 18px; max-height: 55vh; overflow-y: auto; }
+/* One question per page — .hidden is what the paging toggles. */
 .dialog-q { display: flex; flex-direction: column; gap: 8px; }
+.dialog-q.hidden { display: none; }
 .dialog-q-header {
   font-size: 10px; font-weight: 700; color: #7ba3d4;
   text-transform: uppercase; letter-spacing: 0.08em;
@@ -668,13 +828,23 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   text-align: left; cursor: pointer;
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--radius-xs); padding: 9px 12px;
-  display: flex; flex-direction: column; gap: 3px;
+  display: flex; align-items: flex-start; gap: 10px;
   color: inherit; font: inherit; transition: border-color 0.15s, background 0.15s;
 }
+.dialog-option > input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+.dialog-option-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
 .dialog-option:hover { border-color: var(--accent); }
 .dialog-option.selected { border-color: var(--accent); background: var(--tool-bg); }
 .dialog-option-label { font-size: 14px; font-weight: 500; }
 .dialog-option-desc { font-size: 12px; color: var(--text-muted); }
+/* Always present, for when none of the offered options fit. */
+.dialog-other-text {
+  margin-top: 4px; width: 100%;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-xs);
+  padding: 6px 8px; font: inherit; font-size: 13px; outline: none;
+}
+.dialog-other-text:focus { border-color: var(--accent); }
 
 /* ── Input form ── */
 .input-form {

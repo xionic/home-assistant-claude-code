@@ -115,9 +115,12 @@ function addonConfigsDenyHook(input) {
 
 // Only register the hook when access is disabled — when enabled there is no
 // guard to run, so we avoid a per-tool-call round-trip to the subprocess.
-const ADDON_CONFIGS_HOOKS = ALLOW_ADDON_CONFIGS
-  ? undefined
-  : { PreToolUse: [{ hooks: [async (input) => addonConfigsDenyHook(input)] }] };
+const ADDON_CONFIGS_HOOK = ALLOW_ADDON_CONFIGS
+  ? null
+  : async (input) => addonConfigsDenyHook(input);
+const ADDON_CONFIGS_HOOKS = ADDON_CONFIGS_HOOK
+  ? { PreToolUse: [{ hooks: [ADDON_CONFIGS_HOOK] }] }
+  : undefined;
 
 // The permission mode for the in-flight run. Updated live by `set_perm_mode`
 // messages so the user can change how tools are approved mid-prompt.
@@ -126,14 +129,109 @@ let activePermMode = DEFAULT_PERMISSION_MODE;
 // Auto-continue runtime state. `enabled` is the user toggle (persisted to /data);
 // `pending` holds a scheduled resume so it survives an app/HA restart.
 // `autoContinueTimer` is the live setTimeout handle (not persisted).
-let autoContinue = { enabled: false, pending: null };
+// `offer` is the other half: a limit that stopped a run while auto-continue was
+// *off*. Nothing is scheduled, but the reset time is worth keeping — it's what
+// lets the UI say when the limit lifts and offer to pick the run up then, and
+// what turning the toggle on afterwards schedules from.
+let autoContinue = { enabled: false, pending: null, offer: null };
 let autoContinueTimer = null;
 
 // Shared permission/dialog state for headless auto-continue runs. A tool prompt
 // during an auto-resume (there's no originating browser socket) is surfaced to,
 // and answered by, any connected client via this module-level state rather than
 // hanging on a closed socket.
-const autoResumeState = { pendingPermissions: new Map(), pendingDialogs: new Map() };
+const autoResumeState = { pendingPermissions: new Map() };
+
+// ── AskUserQuestion ───────────────────────────────────────────────────────────
+// The SDK's own dialog transport (`onUserDialog`) is never actually reached for
+// AskUserQuestion: the tool call completes inside the CLI subprocess with a
+// canned "The user did not answer the questions." and no request_user_dialog is
+// ever sent, whatever `toolConfig.askUserQuestion` declares. That is why the
+// tool used to be disallowed outright here.
+//
+// It is driven by hand instead: intercept the call before it runs, put the
+// question to the browser on the existing `user_dialog` wire message, and turn
+// whatever comes back into a *denial* whose message is the user's answer.
+// `canUseTool` has no "succeeded with this result" shape, and a denial's message
+// is delivered to the model as the tool result — verified live: the model reads
+// it as the answer and carries on normally, across single/multi-question,
+// multiSelect and dismissed cases alike. `auto` mode has no `canUseTool` at all,
+// so there the same thing is done from a PreToolUse hook (see askQuestionHook).
+//
+// Pending questions are module-level, not per-connection: a question is a
+// property of the run, so any tab may answer it and a tab that connects
+// afterwards is shown the one still waiting.
+const pendingDialogs = new Map();   // id → { payload, resolve }
+
+function formatQuestionDenial(toolInput, result) {
+  if (!result || !result.answers) {
+    return {
+      behavior: 'deny',
+      message: 'The user closed the question dialog without answering. Ask again if you still need the answer, ' +
+        'or carry on using your best judgement.',
+    };
+  }
+  const lines = (toolInput.questions || []).map((q) => {
+    const a = result.answers[q.header];
+    const text = Array.isArray(a) ? a.join(', ') : (a || '(no answer given)');
+    return `- ${q.header}: ${text}`;
+  });
+  return { behavior: 'deny', message: `The user answered your question(s):\n${lines.join('\n')}` };
+}
+
+// Put a question to whoever is connected and wait — however long that takes.
+// Resolves with the raw answer payload, or null if it was skipped or aborted.
+//
+// Deliberately waits even with nobody connected right now (e.g. an unattended
+// auto-continue resume, or a phone's browser mid-reconnect): broadcast() to zero
+// clients is simply a no-op, and a client that connects later is shown every
+// entry still in `pendingDialogs` (see wss.on('connection')) — so the question
+// is just as answerable in ten minutes, or tomorrow, as it was the instant it
+// was asked. The only things that end the wait are an actual answer, Skip, or
+// the run itself ending (the abort listener below).
+function askQuestion(toolInput, signal) {
+  return new Promise((resolve) => {
+    const id = randomUUID();
+    const payload = toolInput;
+    pendingDialogs.set(id, { payload, resolve });
+    broadcast({ type: 'user_dialog', id, dialogKind: 'askUserQuestion', payload });
+    signal?.addEventListener('abort', () => {
+      if (pendingDialogs.delete(id)) {
+        // Without telling the clients, the question would sit on screen as
+        // still-waiting after Stop had already ended the turn.
+        broadcast({ type: 'user_dialog_cancelled', id });
+        resolve(null);
+      }
+    }, { once: true });
+  });
+}
+
+// The `auto` permission mode is SDK-native and has no canUseTool, so the same
+// interception happens as a PreToolUse hook — which runs in every mode and
+// short-circuits the tool before it executes.
+async function askQuestionHook(input, _toolUseID, options) {
+  if (input?.tool_name !== 'AskUserQuestion') return { continue: true };
+  const toolInput = input.tool_input || {};
+  const answer = await askQuestion(toolInput, options?.signal);
+  const denial = formatQuestionDenial(toolInput, answer);
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: denial.message,
+    },
+  };
+}
+
+// PreToolUse hooks for a run: the /addon_configs guard (when access is off) and,
+// in `auto` mode only, the AskUserQuestion interceptor.
+function hooksFor(mode) {
+  const pre = [];
+  if (ADDON_CONFIGS_HOOK) pre.push(ADDON_CONFIGS_HOOK);
+  if (mode === 'auto') pre.push(askQuestionHook);
+  return pre.length ? { PreToolUse: [{ hooks: pre }] } : undefined;
+}
 
 const app = express();
 const server = createServer(app);
@@ -356,7 +454,7 @@ if (DEBUG_MODE) app.get('/diag/conv', (req, res) => {
 if (DEBUG_MODE) app.get('/diag/feed', async (req, res) => {
   const q = (req.query.q || 'Say hello in three words.').toString();
   const dummyWs = { readyState: 3 };  // never open / never in `connections`
-  await runQuery(dummyWs, { pendingPermissions: new Map(), pendingDialogs: new Map() }, { text: q, permissionMode: 'auto' });
+  await runQuery(dummyWs, { pendingPermissions: new Map() }, { text: q, permissionMode: 'auto' });
   const items = parseSession(activeSessionId);
   res.json({ activeSessionId, count: items.length, last: items.slice(-6) });
 });
@@ -649,7 +747,24 @@ function isCommandEcho(text) {
 // Turn one stored JSONL line into render item(s), matching the live event shapes.
 // Each item carries `ts` (epoch ms, from the stored ISO timestamp) so the UI can
 // show when the message happened after a reload.
-function lineToItems(line) {
+// The two messages formatQuestionDenial() can produce. Fixed strings, so
+// matching them is safe — and only ever consulted for a tool_result whose
+// tool_use isn't in `toolNames` (a transcript truncated above the call).
+const QUESTION_ANSWER_RE = /^The user (answered your question\(s\):|closed the question dialog without answering\.)/;
+
+// An AskUserQuestion is answered by *denying* the tool call with the answer as
+// the message (see formatQuestionDenial), so it lands in the transcript as
+// is_error:true on a perfectly ordinary reply. That's a deliberate choice made
+// for the model's benefit, not a failure the reader should see in red.
+function isQuestionAnswer(toolName, isError, text) {
+  if (!isError) return false;
+  if (toolName === 'AskUserQuestion') return true;
+  return toolName === undefined && QUESTION_ANSWER_RE.test(text);
+}
+
+// `toolNames` is tool_use id → tool name, carried across the whole transcript by
+// parseSession: a tool_result line only ever carries the id.
+function lineToItems(line, toolNames = new Map()) {
   const items = [];
   const msg = line.message;
   if (line.isMeta || line.isSidechain || line.isCompactSummary || !msg) return items;
@@ -664,14 +779,20 @@ function lineToItems(line) {
         if (b.type === 'text' && b.text) { if (!isCommandEcho(b.text)) push({ kind: 'user', text: b.text }); }
         else if (b.type === 'tool_result') {
           const raw = blockText(b.content);
-          push({ kind: 'tool_result', id: b.tool_use_id, output: raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw, isError: !!b.is_error });
+          const answered = isQuestionAnswer(toolNames.get(b.tool_use_id), !!b.is_error, raw);
+          push({ kind: 'tool_result', id: b.tool_use_id,
+            output: raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw,
+            isError: !!b.is_error && !answered, answered });
         }
       }
     }
   } else if (line.type === 'assistant') {
     for (const b of (msg.content || [])) {
       if (b.type === 'text' && b.text) push({ kind: 'text', text: b.text });
-      else if (b.type === 'tool_use') push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
+      else if (b.type === 'tool_use') {
+        toolNames.set(b.id, b.name);
+        push({ kind: 'tool_use', id: b.id, name: b.name, input: b.input });
+      }
     }
   }
   return items;
@@ -681,10 +802,11 @@ function parseSession(id) {
   const file = path.join(STORE_DIR, `${id}.jsonl`);
   if (!id || !existsSync(file)) return [];
   const items = [];
+  const toolNames = new Map();
   for (const ln of readFileSync(file, 'utf8').split('\n')) {
     if (!ln.trim()) continue;
     let obj; try { obj = JSON.parse(ln); } catch { continue; }
-    items.push(...lineToItems(obj));
+    items.push(...lineToItems(obj, toolNames));
   }
   return items;
 }
@@ -736,8 +858,31 @@ function loadAutoContinue() {
       const d = JSON.parse(readFileSync(AUTO_CONTINUE_FILE, 'utf8'));
       autoContinue.enabled = !!d.enabled;
       autoContinue.pending = d.pending || null;
+      autoContinue.offer = d.offer || null;
     }
   } catch (e) { console.warn('Could not load auto-continue state:', e.message); }
+}
+
+// An offer is only worth showing while it still means something: the limit has
+// to be one this session could actually be resumed from, and a reset long past
+// is history, not a plan. The grace window keeps it on screen for a little while
+// after the reset so "you can send again now" is still visible when you look.
+const LIMIT_OFFER_GRACE_MS = 30 * 60 * 1000;
+
+function liveLimitOffer() {
+  const o = autoContinue.offer;
+  if (!o || !activeSessionId) return null;
+  if (o.sessionId && o.sessionId !== activeSessionId) return null;
+  if (Date.now() > o.resetsAt * 1000 + LIMIT_OFFER_GRACE_MS) return null;
+  return o;
+}
+
+function clearLimitOffer(reason) {
+  if (!autoContinue.offer) return;
+  autoContinue.offer = null;
+  saveAutoContinue();
+  vlog(`limit offer cleared (${reason})`);
+  broadcast({ type: 'limit_offer_cleared' });
 }
 
 function saveAutoContinue() {
@@ -841,7 +986,6 @@ wss.on('connection', (ws) => {
 
   const state = {
     pendingPermissions: new Map(),
-    pendingDialogs: new Map(),
   };
   ws._state = state;   // exposed so set_perm_mode can resolve prompts across tabs
 
@@ -860,10 +1004,20 @@ wss.on('connection', (ws) => {
   // Restore the active session's transcript + the session list on (re)connect
   send(ws, { type: 'sessions', sessions: listSessions(), activeId: activeSessionId });
   send(ws, { type: 'history', items: parseSession(activeSessionId), running: !!activeQuery });
-  // Replay a scheduled auto-continue so a (re)connecting tab shows the countdown.
+  // Replay a scheduled auto-continue so a (re)connecting tab shows the countdown,
+  // or — when nothing is scheduled — the standing offer to turn one on.
   if (autoContinue.pending) {
     send(ws, { type: 'auto_continue_pending', resetsAt: autoContinue.pending.resetsAt,
       rateLimitType: autoContinue.pending.rateLimitType, attempts: autoContinue.pending.attempts });
+  } else if (liveLimitOffer()) {
+    send(ws, { type: 'limit_offer', resetsAt: autoContinue.offer.resetsAt,
+      rateLimitType: autoContinue.offer.rateLimitType, supported: isSubscriptionAuth() });
+  }
+  // A question Claude asked while this tab was away is part of the run, not of
+  // the socket that happened to be open — so it's still waiting, and this is
+  // what shows it rather than leaving the turn silently paused.
+  for (const [id, d] of pendingDialogs) {
+    send(ws, { type: 'user_dialog', id, dialogKind: 'askUserQuestion', payload: d.payload });
   }
 
   ws.on('message', (raw) => {
@@ -900,6 +1054,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'new_session') {
       abortActive();
       cancelAutoContinue('new-session');
+      clearLimitOffer('new-session');
       activeSessionId = null;
       saveActive();
       broadcast({ type: 'cleared' });
@@ -909,6 +1064,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'session_switch') {
       abortActive();
       cancelAutoContinue('session-switch');
+      clearLimitOffer('session-switch');
       activeSessionId = msg.id || null;
       saveActive();
       broadcast({ type: 'history', items: parseSession(activeSessionId), running: false });
@@ -929,14 +1085,15 @@ wss.on('connection', (ws) => {
         entry.resolve(msg.decision);
       }
     } else if (msg.type === 'user_dialog_response') {
-      // Reply to an onUserDialog request (e.g. AskUserQuestion). `result` is the
-      // SDK-defined answer shape; its absence means the user dismissed the dialog.
-      const resolve = state.pendingDialogs.get(msg.id);
-      if (resolve) {
-        state.pendingDialogs.delete(msg.id);
-        resolve(msg.result === undefined
-          ? { behavior: 'cancelled' }
-          : { behavior: 'completed', result: msg.result });
+      // An answer to an AskUserQuestion. `result` absent means the user chose to
+      // skip it — Claude is told nobody answered and carries on. (Closing the
+      // dialog to read the chat first sends nothing at all: the question stays
+      // pending and the strip above the composer is the way back to it.)
+      const entry = pendingDialogs.get(msg.id);
+      if (entry) {
+        pendingDialogs.delete(msg.id);
+        broadcast({ type: 'user_dialog_cancelled', id: msg.id });   // close it on every other tab
+        entry.resolve(msg.result || null);
       }
     } else if (msg.type === 'set_perm_mode') {
       // Change how tools are approved mid-prompt. Takes effect immediately for
@@ -973,7 +1130,16 @@ wss.on('connection', (ws) => {
       broadcast({ type: 'auto_continue_state', enabled: autoContinue.enabled,
         supported: isSubscriptionAuth() });
       // Turning it off drops any resume already scheduled.
-      if (!autoContinue.enabled) cancelAutoContinue('disabled');
+      if (!autoContinue.enabled) { cancelAutoContinue('disabled'); return; }
+      // Turning it on while a limit is still in force schedules *that* resume,
+      // not just the next one — which is the whole point of offering the switch
+      // at the moment you find out you've been cut off.
+      const offer = liveLimitOffer();
+      if (offer && isSubscriptionAuth() && !autoContinue.pending && !activeQuery) {
+        autoContinue.offer = null;
+        broadcast({ type: 'limit_offer_cleared' });
+        scheduleAutoContinue(offer);
+      }
     } else if (msg.type === 'cancel_auto_continue') {
       cancelAutoContinue('user');
     }
@@ -986,8 +1152,17 @@ wss.on('connection', (ws) => {
     // permission prompts tied to this (now gone) client so the run doesn't hang.
     for (const entry of state.pendingPermissions.values()) entry.resolve('deny');
     state.pendingPermissions.clear();
-    for (const resolve of state.pendingDialogs.values()) resolve({ behavior: 'cancelled' });
-    state.pendingDialogs.clear();
+    // Questions are NOT tied to any connection — they wait indefinitely, however
+    // long the app sits backgrounded or the phone sleeps. This used to cancel
+    // every pending question the moment the last tab disconnected (auto-answering
+    // it "closed without answering" behind your back), on the theory that with
+    // nobody left to ask, the run would otherwise hang forever. But a phone
+    // backgrounding its browser drops the WebSocket routinely — that's not
+    // "nobody's coming back", it's normal, and the question should just still be
+    // there, on the strip, when you are. Nothing here needs to clean up when a
+    // connection drops: the query itself owns the wait (via the tool call's own
+    // abort signal — see askQuestion()), so Stop / a new prompt / a session
+    // switch already end it correctly without any help from ws.close.
   });
 });
 
@@ -997,15 +1172,22 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
   // A run that isn't itself the auto-continue firing supersedes any scheduled
   // resume — the user (or a fresh prompt) has taken over. `fireAutoContinue`
   // clears `pending` before it calls in here, so this is a no-op for that path.
-  if (autoAttempts === 0 && autoContinue.pending) cancelAutoContinue('superseded-by-prompt');
+  if (autoAttempts === 0) {
+    if (autoContinue.pending) cancelAutoContinue('superseded-by-prompt');
+    clearLimitOffer('superseded-by-prompt');
+  }
 
   const abortController = new AbortController();
   activeQuery = abortController;
   const startedAt = Date.now();
 
   // Set if a 5-hour usage-limit rejection stops this run; drives auto-continue.
+  // Trusted over anything that follows it in the same run — see the note by the
+  // 'result' handler below on why a 'success' subtype can't be trusted instead.
   let limitHit = null;
-  let endedSuccessfully = false;
+  // tool_use id → tool name for this run: a tool_result only carries the id, and
+  // an AskUserQuestion answer has to be told apart from a real failure.
+  const liveToolNames = new Map();
 
   // Show the user's message on other clients (sender rendered it locally; the
   // SDK persists it to the session store, so nothing to record ourselves).
@@ -1016,9 +1198,6 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     abortController,
     plugins: PLUGINS,
   };
-
-  // Block /addon_configs access unless the app option enables it.
-  if (ADDON_CONFIGS_HOOKS) opts.hooks = ADDON_CONFIGS_HOOKS;
 
   if (model) opts.model = model;
 
@@ -1033,12 +1212,22 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
   // canUseTool so the ExitPlanMode approval surfaces as a normal prompt.
   activePermMode = permissionMode || DEFAULT_PERMISSION_MODE;
 
+  // Block /addon_configs unless the option enables it, and — in `auto` mode,
+  // which has no canUseTool — intercept AskUserQuestion.
+  const hooks = hooksFor(activePermMode);
+  if (hooks) opts.hooks = hooks;
+
   if (activePermMode === 'auto') {
     // A model classifier approves/denies each tool — no prompts, no canUseTool.
     opts.permissionMode = 'auto';
   } else {
     if (activePermMode === 'plan') opts.permissionMode = 'plan';
     opts.canUseTool = (toolName, input, options) => {
+      // A question is Claude asking the human something, not an action needing
+      // approval — it never reaches the permission modes below.
+      if (toolName === 'AskUserQuestion') {
+        return askQuestion(input, options.signal).then((answer) => formatQuestionDenial(input, answer));
+      }
       const mode = activePermMode;
       // Auto-allow without prompting when the current mode permits it.
       if (mode === 'bypass' || (mode === 'acceptEdits' && EDIT_TOOLS.has(toolName))) {
@@ -1101,27 +1290,23 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     };
   }
 
-  // AskUserQuestion is disabled so Claude falls back to plain-text questions
-  // rather than using a structured tool that the subprocess handles silently.
-  // onUserDialog is still wired up in case a future SDK version routes it here.
-  opts.disallowedTools = ['AskUserQuestion'];
-  opts.onUserDialog = (request, { signal }) => new Promise((resolve) => {
-    // The payload/result shapes are SDK-defined and transported opaquely; log
-    // them so the exact AskUserQuestion contract can be confirmed in the field.
-    console.log('[onUserDialog]', request.dialogKind, JSON.stringify(request.payload));
-    const id = randomUUID();
-    send(ws, {
-      type: 'user_dialog',
-      id,
-      dialogKind: request.dialogKind,
-      payload: request.payload,
-      toolUseID: request.toolUseID,
-    });
-    state.pendingDialogs.set(id, resolve);
-    signal.addEventListener('abort', () => {
-      if (state.pendingDialogs.delete(id)) resolve({ behavior: 'cancelled' });
-    }, { once: true });
-  });
+  // AskUserQuestion is intercepted before it runs (canUseTool above, or the
+  // PreToolUse hook in `auto` mode), so the tool never actually executes and the
+  // CLI's canned "the user did not answer" can't happen. `onUserDialog` is still
+  // registered — it is the documented route and costs nothing — in case a future
+  // SDK build starts using it; it feeds the same pendingDialogs map, so the
+  // browser side is identical either way.
+  // (onUserDialog alone does nothing: the CLI fails closed on any dialog_kind
+  // not also named in supportedDialogKinds, and the tool needs its toolConfig
+  // entry. All three together are the documented contract — it still isn't the
+  // route AskUserQuestion actually takes, hence the interception above.)
+  opts.supportedDialogKinds = ['askUserQuestion'];
+  opts.toolConfig = { askUserQuestion: { previewFormat: 'html' } };
+  opts.onUserDialog = (request, { signal }) => {
+    log('INFO', `onUserDialog: ${request.dialogKind}`);
+    return askQuestion(request.payload || {}, signal)
+      .then((answer) => (answer ? { behavior: 'completed', result: answer } : { behavior: 'cancelled' }));
+  };
 
   const resuming = !!activeSessionId;
   if (resuming) {
@@ -1198,6 +1383,7 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
             broadcast({ type: 'text', text: block.text });
           } else if (block.type === 'tool_use') {
             vlog(`tool_use: ${block.name}`);
+            liveToolNames.set(block.id, block.name);
             broadcast({ type: 'tool_use', id: block.id, name: block.name, input: block.input });
           }
         }
@@ -1214,7 +1400,12 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
                   : JSON.stringify(block.content);
               const output = raw.length > 4000 ? raw.slice(0, 4000) + '\n…[truncated]' : raw;
               vlog(`tool_result: ${raw.length} chars${block.is_error ? ' (error)' : ''}`);
-              broadcast({ type: 'tool_result', id: block.tool_use_id, output, isError: block.is_error });
+              // See isQuestionAnswer(): an answered question comes back as an
+              // error and must not be rendered as one.
+              const answered = isQuestionAnswer(liveToolNames.get(block.tool_use_id), !!block.is_error, raw);
+              liveToolNames.delete(block.tool_use_id);
+              broadcast({ type: 'tool_result', id: block.tool_use_id, output,
+                isError: !!block.is_error && !answered, answered });
             }
           }
         }
@@ -1234,7 +1425,11 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
         }
 
       } else if (event.type === 'result') {
-        if (event.subtype === 'success') endedSuccessfully = true;
+        // Not trusted to mean the turn actually finished: a usage-limit
+        // rejection can still be followed by a 'result' event claiming
+        // subtype:'success' (cost $0, 1 turn) before the generator throws for
+        // real — confirmed live. `limitHit`, set from the actual
+        // rate_limit_event above, is what the `finally` block acts on instead.
         if (credentialsExpired) { credentialsExpired = false; broadcast({ type: 'auth_status', authenticated: true }); }
         const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
         log('INFO', `result: ${event.subtype} in ${secs}s, ${event.num_turns} turns, ` +
@@ -1256,19 +1451,33 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
     if (!abortController.signal.aborted) {
       const message = String(err?.message || err);
       log('ERROR', `query failed after ${((Date.now() - startedAt) / 1000).toFixed(1)}s: ${message}`);
-      if (isAuthError(message)) {
-        // Auth failure (e.g. expired OAuth) — the SESSION is fine; keep it so the
-        // conversation resumes after re-login. (Dropping it here made a later
-        // "continue" start a brand-new empty session.)
-        credentialsExpired = true;
-        log('WARN', 'query failed on authentication — prompting re-login');
-        broadcast({ type: 'auth_expired', subscription: isSubscriptionAuth() });
-      } else if (resuming) {
-        // A genuinely stale resume id (e.g. the SDK session expired) — drop it so
-        // the next prompt starts fresh.
-        activeSessionId = null; saveActive();
+      // A usage-limit rejection can throw from HERE rather than ending quietly —
+      // confirmed live: rate_limit_event(status:'rejected') fires (setting
+      // limitHit below), then the SDK still emits a 'result' event claiming
+      // subtype:'success' with cost $0 / 1 turn, and *then* the generator throws
+      // this exact wrapped text ("Claude Code returned an error result: You've
+      // hit your session limit · resets …"). None of that is a fresh failure:
+      // `limitHit` (the real rate_limit_event) is the trustworthy signal, not
+      // the misleading "success" or this thrown text, so this branch does
+      // nothing for it — the `finally` block's usage-limit handling covers it,
+      // with no stale-session drop and no raw error bubble on top of it.
+      if (!limitHit) {
+        if (isAuthError(message)) {
+          // Auth failure (e.g. expired OAuth) — the SESSION is fine; keep it so
+          // the conversation resumes after re-login. (Dropping it here made a
+          // later "continue" start a brand-new empty session.)
+          credentialsExpired = true;
+          log('WARN', 'query failed on authentication — prompting re-login');
+          broadcast({ type: 'auth_expired', subscription: isSubscriptionAuth() });
+        } else if (resuming) {
+          // A genuinely stale resume id (e.g. the SDK session expired) — drop it
+          // so the next prompt starts fresh. (A limit-hit session isn't stale —
+          // see above — and must keep its id: it's exactly what auto-continue
+          // resumes from.)
+          activeSessionId = null; saveActive();
+        }
+        broadcast({ type: 'error', message });
       }
-      broadcast({ type: 'error', message });
     }
   } finally {
     clearInterval(watchdog);
@@ -1286,16 +1495,32 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
       broadcast({ type: 'ha_links', entities: haLinks.entities, automations: haLinks.automations }));
 
     // Auto-continue: if a 5-hour usage limit stopped this run (and the user
-    // didn't abort / it didn't otherwise succeed), schedule a resume for when
-    // the limit resets — subscription auth and the toggle permitting.
-    if (limitHit && !endedSuccessfully && !abortController.signal.aborted) {
-      if (autoContinue.enabled && isSubscriptionAuth()) {
+    // didn't abort it), schedule a resume for when the limit resets —
+    // subscription auth and the toggle permitting. Not also gated on the
+    // 'result' event's subtype: see the notes above on why that can't be
+    // trusted once a real rate_limit_event rejection has already been seen.
+    if (limitHit && !abortController.signal.aborted) {
+      const supported = isSubscriptionAuth();
+      const willResume = autoContinue.enabled && supported && autoAttempts < AUTO_CONTINUE_MAX_ATTEMPTS;
+      // Mark the place in the conversation where it stopped, and say whether
+      // anything is going to pick it up. The banner above the composer stays
+      // current as the clock moves; this is the part that's still there in the
+      // transcript tomorrow, where the chat actually broke off.
+      broadcast({
+        type: 'limit_notice',
+        resetsAt: limitHit.resetsAt,
+        rateLimitType: limitHit.rateLimitType,
+        scheduled: willResume,
+        supported,
+      });
+      if (autoContinue.enabled && supported) {
         const attempts = autoAttempts + 1;
         if (attempts > AUTO_CONTINUE_MAX_ATTEMPTS) {
           log('WARN', `auto-continue: still limited after ${AUTO_CONTINUE_MAX_ATTEMPTS} attempts — giving up`);
           broadcast({ type: 'auto_continue_gaveup', attempts: AUTO_CONTINUE_MAX_ATTEMPTS });
           autoContinue.pending = null; saveAutoContinue();
         } else {
+          clearLimitOffer('scheduled');
           scheduleAutoContinue({
             resetsAt: limitHit.resetsAt,
             rateLimitType: limitHit.rateLimitType,
@@ -1307,6 +1532,21 @@ async function runQuery(ws, state, { text, permissionMode, model, effort, autoAt
         }
       } else {
         log('INFO', `usage limit hit; auto-continue ${autoContinue.enabled ? 'needs subscription auth' : 'is off'}`);
+        // Nothing is scheduled, but remember enough to schedule one if the user
+        // turns the toggle on after reading the notice — otherwise the offer
+        // would be a button that only works for the *next* limit.
+        autoContinue.offer = {
+          resetsAt: limitHit.resetsAt,
+          rateLimitType: limitHit.rateLimitType,
+          model: model || null,
+          effort: effort || null,
+          permissionMode: permissionMode || DEFAULT_PERMISSION_MODE,
+          attempts: autoAttempts + 1,
+          sessionId: activeSessionId,
+        };
+        saveAutoContinue();
+        broadcast({ type: 'limit_offer', resetsAt: limitHit.resetsAt,
+          rateLimitType: limitHit.rateLimitType, supported });
       }
     }
   }

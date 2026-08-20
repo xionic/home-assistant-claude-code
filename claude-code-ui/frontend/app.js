@@ -6,7 +6,6 @@ const wsUrl   = `${wsProto}//${location.host}${wsBase}/ws`;
 let ws            = null;
 let isConnected   = false;
 let isRunning     = false;
-let pendingPermId = null;
 
 const loginScreen    = document.getElementById('login-screen');
 const loginBtn       = document.getElementById('login-btn');
@@ -32,6 +31,7 @@ const autoContinueHint   = document.getElementById('auto-continue-hint');
 const acBanner       = document.getElementById('auto-continue-banner');
 const acBannerText   = document.getElementById('ac-banner-text');
 const acBannerCancel = document.getElementById('ac-banner-cancel');
+const acBannerEnable = document.getElementById('ac-banner-enable');
 const sessionsBtn    = document.getElementById('sessions-btn');
 const sessionsPanel  = document.getElementById('sessions-panel');
 const sessionsListEl = document.getElementById('sessions-list');
@@ -50,11 +50,21 @@ const permAllow      = document.getElementById('perm-allow');
 const permAlways     = document.getElementById('perm-always');
 const permAlwaysHint = document.getElementById('perm-always-hint');
 const permDeny       = document.getElementById('perm-deny');
+const permLater      = document.getElementById('perm-later');
 const dialogOverlay  = document.getElementById('dialog-overlay');
 const dialogTitle    = document.getElementById('dialog-title');
 const dialogBody     = document.getElementById('dialog-body');
 const dialogSubmit   = document.getElementById('dialog-submit');
-const dialogCancel   = document.getElementById('dialog-cancel');
+const dialogSkip     = document.getElementById('dialog-skip');
+const dialogBack     = document.getElementById('dialog-back');
+const dialogLater    = document.getElementById('dialog-later');
+const dialogProgress = document.getElementById('dialog-progress');
+const chatScroll     = document.getElementById('chat-scroll');
+const promptPrevBtn  = document.getElementById('prompt-prev');
+const promptNextBtn  = document.getElementById('prompt-next');
+const questionStrip     = document.getElementById('question-strip');
+const questionStripText = document.getElementById('question-strip-text');
+const questionStripOpen = document.getElementById('question-strip-open');
 
 const cmdMenu = document.getElementById('cmd-menu');
 const attachInput   = document.getElementById('attach-input');
@@ -401,7 +411,7 @@ function handleServerMessage(msg) {
       break;
 
     case 'tool_result':
-      appendToolResult(msg.id, msg.output, msg.isError);
+      appendToolResult(msg.id, msg.output, msg.isError, msg.answered);
       // Still running → Claude is deciding its next step
       if (isRunning) showThinking();
       break;
@@ -414,10 +424,7 @@ function handleServerMessage(msg) {
     case 'permission_resolved':
       // The server auto-approved this pending prompt (the user switched the mode
       // to Bypass/Accept edits mid-run) — just dismiss the card.
-      if (pendingPermId === msg.id) {
-        pendingPermId = null;
-        permOverlay.classList.add('hidden');
-      }
+      if (pendingPerm && pendingPerm.id === msg.id) closePermission();
       break;
 
     case 'result':
@@ -453,6 +460,12 @@ function handleServerMessage(msg) {
       showUserDialog(msg);
       break;
 
+    case 'user_dialog_cancelled':
+      // Answered on another tab, or the turn was stopped — either way there's
+      // nothing left to answer here.
+      dropDialog(msg.id);
+      break;
+
     case 'error':
       hideThinking();
       lastAssistantBubble = null;
@@ -476,10 +489,27 @@ function handleServerMessage(msg) {
       break;
 
     case 'auto_continue_pending':
+      limitOffer = null;
       showAcBanner(msg.resetsAt, msg.rateLimitType, msg.attempts);
       break;
 
     case 'auto_continue_cancelled':
+      hideAcBanner();
+      break;
+
+    case 'limit_notice':
+      appendLimitNotice(msg);
+      break;
+
+    case 'limit_offer':
+      // A usage limit stopped the run and nothing is scheduled. Say when it
+      // lifts, and offer to have the chat pick itself up then.
+      limitOffer = { resetsAt: msg.resetsAt, supported: msg.supported !== false };
+      showAcBanner(msg.resetsAt, msg.rateLimitType, 0, true);
+      break;
+
+    case 'limit_offer_cleared':
+      limitOffer = null;
       hideAcBanner();
       break;
 
@@ -782,7 +812,7 @@ function appendToolUse(id, name, input) {
 
   const summaryEl = document.createElement('span');
   summaryEl.className = 'tool-call-summary';
-  summaryEl.textContent = getInputSummary(input);
+  summaryEl.textContent = getInputSummary(name, input);
 
   const statusEl = document.createElement('span');
   statusEl.className = 'tool-call-status status-running';
@@ -795,47 +825,85 @@ function appendToolUse(id, name, input) {
 
   const body = document.createElement('div');
   body.className = 'tool-call-body';
-
-  if (input && Object.keys(input).length > 0) {
-    const pre = document.createElement('pre');
-    pre.className = 'tool-call-input';
-    const raw = JSON.stringify(input, null, 2);
-    pre.textContent = raw.length > 600 ? raw.slice(0, 600) + '\n…' : raw;
-    body.appendChild(pre);
-    addCopyButton(pre);
-  }
+  body.appendChild(renderToolInput(name, input));
 
   el.append(header, body);
   header.onclick = () => el.classList.toggle('expanded');
 
   const group = ensureToolGroup();
-  group._count++;
+  const st = group._st;
+  st.count++;
+  st.running.add(el);
+  if (st.names[st.names.length - 1] !== name) st.names.push(name);
   group.querySelector('.tool-group-body').appendChild(el);
-  group.querySelector('.tool-group-count').textContent =
-    `${group._count} tool call${group._count !== 1 ? 's' : ''}`;
-  if (group._count >= 2) group.querySelector('.tool-group-header').classList.remove('hidden');
+  refreshToolGroup(group);
 
   scrollBottom();
 
   toolCallEls.set(id, el);
 }
 
-// A run of consecutive tool calls shares one collapsible group. The group is
-// created lazily on the first call and finalised (collapsed when it holds 2+
-// calls) by endToolGroup() as soon as anything else interrupts the run.
+// A tool call's input, rendered as something readable where the shape is known.
+// A question is the case that matters most: {questions:[…]} as raw JSON is
+// unreadable, and it's the one tool call whose input is addressed to a person.
+function renderToolInput(name, input) {
+  if (name === 'AskUserQuestion' && Array.isArray(input && input.questions)) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-call-questions';
+    for (const q of input.questions) {
+      const h = document.createElement('div');
+      h.className = 'tool-call-q';
+      h.textContent = q.question || q.header || '';
+      wrap.appendChild(h);
+      if (Array.isArray(q.options) && q.options.length) {
+        const ul = document.createElement('ul');
+        ul.className = 'tool-call-q-opts';
+        for (const o of q.options) {
+          const li = document.createElement('li');
+          li.textContent = (o && o.label) || String(o);
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+      }
+    }
+    return wrap;
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'tool-call-input';
+  const raw = JSON.stringify(input || {}, null, 2);
+  pre.textContent = raw.length > 600 ? raw.slice(0, 600) + '\n…' : raw;
+  addCopyButton(pre);
+  return pre;
+}
+
+// ── Runs of tool calls ───────────────────────────────────────────────────────
+// A turn is often twenty Reads and Bashes in a row, which buries the prose on
+// either side of it. Adjacent calls collapse into a single row — and they do it
+// *as they arrive*, not once the turn ends: a run only folded away at the end
+// meant watching the transcript unfurl into a wall of tool calls first, which is
+// exactly the mess the folding exists to prevent.
+//
+// Nothing is hidden that you were actually watching: the folded header names the
+// call that's running right now, and afterwards which tools ran and whether any
+// failed. Clicking it opens the run — and once you've done that, later calls
+// joining the run must not fold it back up under you (`_touched`).
 function ensureToolGroup() {
   if (currentToolGroup) return currentToolGroup;
   const group = document.createElement('div');
   group.className = 'tool-group';
-  group._count = 0;
+  group._st = { count: 0, failed: 0, running: new Set(), names: [], touched: false };
 
   const gh = document.createElement('div');
   gh.className = 'tool-group-header hidden';
   gh.innerHTML =
     '<span class="tool-group-icon">⚙</span>' +
     '<span class="tool-group-count"></span>' +
+    '<span class="tool-group-summary"></span>' +
     '<span class="tool-group-chevron">▾</span>';
-  gh.onclick = () => group.classList.toggle('collapsed');
+  gh.onclick = () => {
+    group._st.touched = true;
+    group.classList.toggle('collapsed');
+  };
 
   const body = document.createElement('div');
   body.className = 'tool-group-body';
@@ -846,14 +914,48 @@ function ensureToolGroup() {
   return group;
 }
 
+// What a folded run says about itself: while something is running, the call
+// still going; once it's done, which tools ran. Consecutive repeats collapse to
+// one entry — six Reads in a row reads "Read", not "Read · Read · Read · …".
+function groupSummary(st) {
+  const running = [...st.running].pop();
+  if (running) {
+    const name = (running.querySelector('.tool-call-name') || {}).textContent || '';
+    const arg = (running.querySelector('.tool-call-summary') || {}).textContent || '';
+    return arg ? `${name} ${arg}` : name;
+  }
+  return st.names.length > 6
+    ? `${st.names.slice(0, 6).join(' · ')} +${st.names.length - 6}`
+    : st.names.join(' · ');
+}
+
+function refreshToolGroup(group) {
+  const st = group && group._st;
+  if (!st) return;
+  const gh = group.querySelector('.tool-group-header');
+
+  // One call speaks for itself; the group only takes over once there's a run.
+  gh.classList.toggle('hidden', st.count < 2);
+  if (st.count < 2) group.classList.remove('collapsed');
+  else if (!st.touched) group.classList.add('collapsed');
+
+  gh.querySelector('.tool-group-count').textContent =
+    `${st.count} tool call${st.count !== 1 ? 's' : ''}${st.failed ? ` · ${st.failed} failed` : ''}`;
+  gh.querySelector('.tool-group-summary').textContent = groupSummary(st);
+  gh.classList.toggle('has-error', st.failed > 0);
+  group.classList.toggle('running', st.running.size > 0);
+}
+
 function endToolGroup() {
   if (!currentToolGroup) return;
-  // Collapse finished multi-call groups to declutter the transcript.
-  if ((currentToolGroup._count || 0) >= 2) currentToolGroup.classList.add('collapsed');
+  refreshToolGroup(currentToolGroup);
   currentToolGroup = null;
 }
 
-function appendToolResult(id, output, isError) {
+// `answered` marks an AskUserQuestion result: it comes back as an error (the
+// answer rides on a denial — see the server's formatQuestionDenial) but is a
+// perfectly ordinary reply, so it must not be rendered in red.
+function appendToolResult(id, output, isError, answered) {
   const el = toolCallEls.get(id);
   toolCallEls.delete(id);
 
@@ -865,11 +967,27 @@ function appendToolResult(id, output, isError) {
     statusEl.className = 'tool-call-status ' + (isError ? 'status-error' : 'status-done');
 
     const body = el.querySelector('.tool-call-body');
+    if (answered) {
+      const label = document.createElement('div');
+      label.className = 'tool-call-answer-label';
+      label.textContent = 'Answer';
+      body.appendChild(label);
+    }
     const resultEl = document.createElement('pre');
     resultEl.className = 'tool-call-result' + (isError ? ' result-error' : '');
     resultEl.textContent = truncated;
     body.appendChild(resultEl);
     addCopyButton(resultEl);
+
+    // The run's header reports what happened while it's folded away, so it has
+    // to hear about the call finishing (and failing) too.
+    const group = el.closest('.tool-group');
+    const st = group && group._st;
+    if (st) {
+      st.running.delete(el);
+      if (isError) st.failed++;
+      refreshToolGroup(group);
+    }
   } else {
     const div = document.createElement('div');
     div.className = 'tool-result' + (isError ? ' tool-result-error' : '');
@@ -882,14 +1000,36 @@ function appendToolResult(id, output, isError) {
   }
 }
 
-function getInputSummary(input) {
+// The one-line gist of a call, shown beside the tool name on the collapsed row.
+// Named tools get the argument that actually identifies the call; anything else
+// falls back to the first string in the input.
+function getInputSummary(name, input) {
   if (!input || typeof input !== 'object') return '';
-  const entries = Object.entries(input);
-  if (!entries.length) return '';
-  const [, val] = entries[0];
-  const s = typeof val === 'string' ? val : JSON.stringify(val);
-  const head = s.length > 52 ? s.slice(0, 52) + '…' : s;
-  return entries.length > 1 ? `${head}  +${entries.length - 1}` : head;
+  const clip = (s) => (s && s.length > 52 ? s.slice(0, 52) + '…' : s || '');
+  switch (name) {
+    case 'Bash': return clip(input.command);
+    case 'Read': case 'Write': case 'Edit': case 'MultiEdit': case 'NotebookEdit':
+      return clip(input.file_path || input.path);
+    case 'Glob': return clip(input.pattern);
+    case 'Grep': return clip(`${input.pattern || ''}${input.path ? ` in ${input.path}` : ''}`);
+    case 'WebFetch': return clip(input.url);
+    case 'WebSearch': return clip(input.query);
+    case 'Task': case 'Agent': return clip(input.description || (input.prompt || '').slice(0, 80));
+    case 'TodoWrite': return `${(input.todos || []).length} items`;
+    // {questions:[…]} has no top-level string, so the fallback would find
+    // nothing and the row would read as a bare "AskUserQuestion".
+    case 'AskUserQuestion': {
+      const q = (input.questions || [])[0] || {};
+      return clip(q.question || q.header);
+    }
+    default: {
+      const entries = Object.entries(input);
+      if (!entries.length) return '';
+      const [, val] = entries[0];
+      const head = clip(typeof val === 'string' ? val : JSON.stringify(val));
+      return entries.length > 1 ? `${head}  +${entries.length - 1}` : head;
+    }
+  }
 }
 
 function appendResultLine({ success, turns }) {
@@ -963,7 +1103,7 @@ function renderHistory(items) {
         case 'user':        usage.messages++; appendUserBubble(it.text, it.ts); break;
         case 'text':        appendAssistantText(it.text, it.ts); break;
         case 'tool_use':    lastAssistantBubble = null; appendToolUse(it.id, it.name, it.input); break;
-        case 'tool_result': appendToolResult(it.id, it.output, it.isError); break;
+        case 'tool_result': appendToolResult(it.id, it.output, it.isError, it.answered); break;
         case 'result':      lastAssistantBubble = null; appendResultLine(it);
                             usage.turns        += it.turns       || 0;
                             usage.cost         += it.cost        || 0;
@@ -1163,10 +1303,48 @@ function mkBubble(role) {
   return div;
 }
 
+// ── Things waiting on you ────────────────────────────────────────────────────
+// Both the permission card and Claude's questions can be *set aside* rather than
+// answered: reading the conversation is usually how you work out what the answer
+// should be, and a modal that only offers yes/no forces a guess. Closing one
+// leaves the request pending on the server — the turn stays paused — and the
+// strip above the composer is the way back to it. Nothing is lost and nothing
+// pops up again on its own.
+
+const pendingDialogs = new Map();    // id → payload, still waiting on the server
+const dismissedDialogs = new Set();  // ids closed with ✕, re-openable from the strip
+
+function refreshQuestionStrip() {
+  const dialogs = pendingDialogs.size;
+  const perms = pendingPerm ? 1 : 0;
+  const overlayUp = !dialogOverlay.classList.contains('hidden') ||
+                    !permOverlay.classList.contains('hidden');
+  if (!(dialogs + perms) || overlayUp) { questionStrip.classList.add('hidden'); return; }
+  questionStripText.textContent =
+    dialogs && perms ? `${dialogs + perms} things need you`
+      : dialogs ? (dialogs === 1 ? 'Claude has a question' : `Claude has ${dialogs} questions`)
+      : 'Claude needs permission';
+  questionStrip.classList.remove('hidden');
+}
+
+questionStripOpen.onclick = () => {
+  const next = [...pendingDialogs.keys()][0];
+  if (next) openDialog(next);
+  else if (pendingPerm) openPermission();
+};
+
 // ── Permission prompt ──────────────────────────────────────────────────────
 
-function showPermissionPrompt({ id, toolName, input, title, canAlways, alwaysLabel }) {
-  pendingPermId = id;
+let pendingPerm = null;   // the request itself, so it can be reopened after ✕
+
+function showPermissionPrompt(req) {
+  pendingPerm = req;
+  openPermission();
+}
+
+function openPermission() {
+  const { toolName, input, title, canAlways, alwaysLabel } = pendingPerm || {};
+  if (!pendingPerm) return;
   permToolChip.textContent = toolName;
   permTitle.textContent = title || `Allow ${toolName}?`;
   const raw = JSON.stringify(input, null, 2);
@@ -1181,130 +1359,239 @@ function showPermissionPrompt({ id, toolName, input, title, canAlways, alwaysLab
       : "Always = don't ask again for this tool";
   }
   permOverlay.classList.remove('hidden');
+  refreshQuestionStrip();
 }
 
 function resolvePermission(decision) {
-  if (!pendingPermId) return;
-  ws.send(JSON.stringify({ type: 'permission_response', id: pendingPermId, decision }));
-  pendingPermId = null;
+  if (!pendingPerm) return;
+  ws.send(JSON.stringify({ type: 'permission_response', id: pendingPerm.id, decision }));
+  closePermission();
+}
+
+// Answered, or resolved for us — nothing left to come back to.
+function closePermission() {
+  pendingPerm = null;
   permOverlay.classList.add('hidden');
+  refreshQuestionStrip();
+}
+
+// Set aside: still pending server-side, reachable from the strip.
+function laterPermission() {
+  if (!pendingPerm) return;
+  permOverlay.classList.add('hidden');
+  refreshQuestionStrip();
 }
 
 permAllow.onclick  = () => resolvePermission('allow');
 permAlways.onclick = () => resolvePermission('always');
 permDeny.onclick   = () => resolvePermission('deny');
+permLater.onclick  = () => laterPermission();
 
-// Close on backdrop click
-permOverlay.onclick = (e) => { if (e.target === permOverlay) resolvePermission('deny'); };
+// A tap on the backdrop sets the card aside rather than denying: a stray tap
+// should never be the thing that refuses a tool call.
+permOverlay.onclick = (e) => { if (e.target === permOverlay) laterPermission(); };
 
 // ── User dialog (AskUserQuestion) ──────────────────────────────────────────
-// The SDK surfaces interactive tools via onUserDialog. AskUserQuestion ships a
-// `questions` array; we render an option picker and send the answers back.
-let pendingDialogId = null;
-let dialogQuestions = [];
-let dialogSelections = [];   // per question: Set of chosen option labels
+// Claude asking the human something. The tool never runs: the server intercepts
+// the call, puts the question here, and hands the answer back as the tool's
+// result (see the server's formatQuestionDenial).
+//
+// One question per page, so a three-question ask isn't a wall of radio buttons —
+// and every question carries an "Other" box, because the option that fits is
+// often not one of the ones offered.
+
+let dialogBuild = null;   // { id, controls, pages, index } for the dialog on screen
 
 function showUserDialog({ id, payload }) {
-  const questions = Array.isArray(payload?.questions) ? payload.questions
+  const questions = Array.isArray(payload && payload.questions) ? payload.questions
     : (payload && Array.isArray(payload.options)) ? [payload] : [];
-  // Unrecognised dialog shapes must be cancelled per the SDK contract.
+  // A shape we don't understand can't be rendered, and leaving the turn paused
+  // on a dialog nobody can answer is worse than declining it.
   if (!questions.length) { ws.send(JSON.stringify({ type: 'user_dialog_response', id })); return; }
+  pendingDialogs.set(id, { questions });
+  // Don't barge in over a question already on screen — finish that one first —
+  // and don't reopen one that was deliberately set aside. (The server replays
+  // pending questions on every connect, so this runs again after a reconnect.)
+  if (!dialogBuild && !dismissedDialogs.has(id)) openDialog(id);
+  else refreshQuestionStrip();
+}
 
-  pendingDialogId = id;
-  dialogQuestions = questions;
-  dialogSelections = questions.map(() => new Set());
+function openDialog(id) {
+  const entry = pendingDialogs.get(id);
+  if (!entry) return;
+  dismissedDialogs.delete(id);
+  if (!dialogBuild || dialogBuild.id !== id) buildDialog(id, entry.questions);
+  dialogOverlay.classList.remove('hidden');
+  refreshQuestionStrip();
+}
+
+function buildDialog(id, questions) {
   dialogTitle.textContent = questions.length > 1 ? 'A few questions' : (questions[0].header || 'Question');
   dialogBody.innerHTML = '';
 
+  const controls = [];
+  const pages = [];
+
   questions.forEach((q, qi) => {
-    const block = document.createElement('div');
-    block.className = 'dialog-q';
-    if (q.header && questions.length > 1) {
+    const page = document.createElement('div');
+    page.className = 'dialog-q';
+
+    if (q.header) {
       const h = document.createElement('div');
       h.className = 'dialog-q-header';
       h.textContent = q.header;
-      block.appendChild(h);
+      page.appendChild(h);
     }
     const qt = document.createElement('div');
     qt.className = 'dialog-q-text';
     qt.textContent = q.question || '';
-    block.appendChild(qt);
+    page.appendChild(qt);
 
-    (q.options || []).forEach((opt) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'dialog-option';
-      const label = document.createElement('div');
-      label.className = 'dialog-option-label';
-      label.textContent = opt.label || '';
-      btn.appendChild(label);
-      if (opt.description) {
-        const desc = document.createElement('div');
+    const group = `q${qi}-${Math.random().toString(36).slice(2)}`;
+    const optionInputs = [];
+
+    const mkOption = (labelText, description) => {
+      const label = document.createElement('label');
+      label.className = 'dialog-option';
+      const input = document.createElement('input');
+      input.type = q.multiSelect ? 'checkbox' : 'radio';
+      input.name = group;
+      label.appendChild(input);
+      const textWrap = document.createElement('span');
+      textWrap.className = 'dialog-option-text';
+      const lab = document.createElement('span');
+      lab.className = 'dialog-option-label';
+      lab.textContent = labelText;
+      textWrap.appendChild(lab);
+      if (description) {
+        const desc = document.createElement('span');
         desc.className = 'dialog-option-desc';
-        desc.textContent = opt.description;
-        btn.appendChild(desc);
+        desc.textContent = description;
+        textWrap.appendChild(desc);
       }
-      btn.onclick = () => {
-        const sel = dialogSelections[qi];
-        if (q.multiSelect) {
-          if (sel.has(opt.label)) sel.delete(opt.label); else sel.add(opt.label);
-        } else {
-          sel.clear(); sel.add(opt.label);
-        }
-        block.querySelectorAll('.dialog-option').forEach((b) => {
-          b.classList.remove('selected');
-          if (sel.has(b.querySelector('.dialog-option-label').textContent)) b.classList.add('selected');
+      label.appendChild(textWrap);
+      input.addEventListener('change', () => {
+        page.querySelectorAll('.dialog-option').forEach((o) => {
+          o.classList.toggle('selected', o.querySelector('input').checked);
         });
         updateDialogSubmit();
-        // Single question, single-select → submit immediately for a fast path.
-        if (!q.multiSelect && questions.length === 1) resolveUserDialog();
-      };
-      block.appendChild(btn);
+      });
+      page.appendChild(label);
+      return { input, label };
+    };
+
+    for (const opt of (q.options || [])) {
+      const { input } = mkOption(opt.label || String(opt), opt.description);
+      optionInputs.push({ input, label: opt.label || String(opt) });
+    }
+
+    // Always offered. Claude is told not to include an "Other" of its own, so
+    // this is the only one — and typing in it implies picking it, without also
+    // having to hit the radio button.
+    const other = mkOption('Other', null);
+    const otherText = document.createElement('input');
+    otherText.type = 'text';
+    otherText.className = 'dialog-other-text';
+    otherText.placeholder = 'Type your own answer…';
+    otherText.addEventListener('input', () => {
+      other.input.checked = true;
+      other.input.dispatchEvent(new Event('change'));
     });
-    dialogBody.appendChild(block);
+    other.label.classList.add('dialog-option-other');
+    other.label.querySelector('.dialog-option-text').appendChild(otherText);
+
+    controls.push({ header: q.header, multiSelect: !!q.multiSelect, optionInputs,
+      otherToggle: other.input, otherText });
+    pages.push(page);
+    dialogBody.appendChild(page);
   });
 
+  dialogBuild = { id, controls, pages, index: 0 };
+  renderDialogPage();
+}
+
+function renderDialogPage() {
+  if (!dialogBuild) return;
+  const { pages, index } = dialogBuild;
+  pages.forEach((p, i) => p.classList.toggle('hidden', i !== index));
+  dialogProgress.textContent = `${index + 1}/${pages.length}`;
+  dialogProgress.classList.toggle('hidden', pages.length <= 1);
+  dialogBack.classList.toggle('hidden', index === 0);
+  dialogSubmit.textContent = index < pages.length - 1 ? 'Next' : 'Submit';
   updateDialogSubmit();
-  dialogOverlay.classList.remove('hidden');
+  dialogBody.scrollTop = 0;
+}
+
+function pagePicked(c) {
+  const picked = c.optionInputs.filter((o) => o.input.checked).map((o) => o.label);
+  const other = c.otherToggle.checked ? c.otherText.value.trim() : '';
+  if (other) picked.push(other);
+  return picked;
 }
 
 function updateDialogSubmit() {
-  dialogSubmit.disabled = !dialogSelections.every((s) => s.size > 0);
+  if (!dialogBuild) return;
+  dialogSubmit.disabled = pagePicked(dialogBuild.controls[dialogBuild.index]).length === 0;
 }
 
-function resolveUserDialog() {
-  if (!pendingDialogId) return;
-  // Result shape mirrors the AskUserQuestion answer contract: one entry per
-  // question with the chosen option label(s). Verify against a logged request
-  // (server logs `[onUserDialog]`) if the agent rejects the answer.
-  const answers = dialogQuestions.map((q, qi) => {
-    const chosen = [...dialogSelections[qi]];
-    return {
-      header: q.header,
-      question: q.question,
-      answer: q.multiSelect ? chosen : (chosen[0] ?? null),
-    };
-  });
-  ws.send(JSON.stringify({ type: 'user_dialog_response', id: pendingDialogId, result: { answers } }));
-  closeUserDialog();
+function collectDialogAnswers() {
+  const answers = {};
+  for (const c of (dialogBuild ? dialogBuild.controls : [])) {
+    const picked = pagePicked(c);
+    if (picked.length) answers[c.header] = c.multiSelect ? picked : picked[0];
+  }
+  return { answers };
 }
 
-function cancelUserDialog() {
-  if (!pendingDialogId) return;
-  ws.send(JSON.stringify({ type: 'user_dialog_response', id: pendingDialogId }));  // no result → cancelled
-  closeUserDialog();
+function submitDialog() {
+  if (!dialogBuild) return;
+  if (dialogBuild.index < dialogBuild.pages.length - 1) {
+    dialogBuild.index++;
+    renderDialogPage();
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'user_dialog_response', id: dialogBuild.id, result: collectDialogAnswers() }));
+  dropDialog(dialogBuild.id);
 }
 
-function closeUserDialog() {
-  pendingDialogId = null;
-  dialogQuestions = [];
-  dialogSelections = [];
+// Answer it later — the question stays pending and the strip brings it back.
+function laterDialog() {
+  if (!dialogBuild) return;
+  dismissedDialogs.add(dialogBuild.id);
   dialogOverlay.classList.add('hidden');
+  refreshQuestionStrip();
 }
 
-dialogSubmit.onclick = () => resolveUserDialog();
-dialogCancel.onclick = () => cancelUserDialog();
-dialogOverlay.onclick = (e) => { if (e.target === dialogOverlay) cancelUserDialog(); };
+// Let Claude get on with it without an answer.
+function skipDialog() {
+  if (!dialogBuild) return;
+  ws.send(JSON.stringify({ type: 'user_dialog_response', id: dialogBuild.id }));   // no result
+  dropDialog(dialogBuild.id);
+}
+
+// The request is gone — answered, skipped, or cancelled by the server.
+function dropDialog(id) {
+  pendingDialogs.delete(id);
+  dismissedDialogs.delete(id);
+  if (dialogBuild && dialogBuild.id === id) {
+    dialogBuild = null;
+    dialogOverlay.classList.add('hidden');
+  }
+  const next = [...pendingDialogs.keys()].find((k) => !dismissedDialogs.has(k));
+  if (next && !dialogBuild) openDialog(next);
+  else refreshQuestionStrip();
+}
+
+dialogSubmit.onclick = () => submitDialog();
+dialogSkip.onclick   = () => skipDialog();
+dialogLater.onclick  = () => laterDialog();
+dialogBack.onclick   = () => {
+  if (!dialogBuild || dialogBuild.index === 0) return;
+  dialogBuild.index--;
+  renderDialogPage();
+};
+// Same reasoning as the permission backdrop: setting it aside, not answering for you.
+dialogOverlay.onclick = (e) => { if (e.target === dialogOverlay) laterDialog(); };
 
 // ── Input form ─────────────────────────────────────────────────────────────
 
@@ -1448,7 +1735,8 @@ function setCurrentHit() {
   if (!m) return;
   m.classList.add('find-current');
   const tg = m.closest('.tool-group');
-  if (tg) tg.classList.remove('collapsed');
+  // Opened on purpose, so it must stay open even if the run is still growing.
+  if (tg) { tg.classList.remove('collapsed'); if (tg._st) tg._st.touched = true; }
   const tc = m.closest('.tool-call');
   if (tc && !tc.classList.contains('expanded')) tc.classList.add('expanded');
   m.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1643,31 +1931,101 @@ autoContinueToggle.onchange = () => {
   }
 };
 
-// The banner counts down to the scheduled resume and offers a Cancel.
+// A usage limit stops a chat mid-thought, and the only thing worth knowing
+// afterwards is whether anything is going to pick it up. This banner answers
+// that and stays current as the clock moves — in two modes:
+//   scheduled — a resume is armed; it counts down and offers a Cancel.
+//   offer     — nothing is armed (auto-continue is off); it says when the limit
+//               lifts and offers to have the chat carry on by itself then.
+// `limitOffer` is the standing offer, if any, so turning the toggle on from
+// anywhere schedules *this* limit rather than only affecting the next one.
+let limitOffer = null;
 let acCountdownTimer = null;
-function showAcBanner(resetsAt, rateLimitType, attempts) {
+
+function limitWhen(resetsAt) {
+  const secs = Math.max(0, Math.round(resetsAt - Date.now() / 1000));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+  const at = new Date(resetsAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return { secs, at, rel: h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s` };
+}
+
+function showAcBanner(resetsAt, rateLimitType, attempts, isOffer) {
   if (acCountdownTimer) clearInterval(acCountdownTimer);
+  const supported = !isOffer || !limitOffer || limitOffer.supported;
   const render = () => {
-    const secs = Math.max(0, Math.round(resetsAt - Date.now() / 1000));
-    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
-    const rel = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
-    const at = new Date(resetsAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    acBannerText.textContent = secs > 0
-      ? `Usage limit reached — auto-continuing at ${at} (in ${rel})`
-      : 'Usage limit reset — resuming…';
+    const { secs, at, rel } = limitWhen(resetsAt);
+    if (isOffer) {
+      acBannerText.textContent = secs > 0
+        ? `Usage limit — resets at ${at} (in ${rel}). Nothing will happen until then unless you send a prompt.`
+        : `Usage limit reset at ${at} — send a prompt to carry on.`;
+    } else {
+      acBannerText.textContent = secs > 0
+        ? `Usage limit reached — auto-continuing at ${at} (in ${rel})`
+        : 'Usage limit reset — resuming…';
+    }
   };
   render();
   acCountdownTimer = setInterval(render, 1000);
+  acBannerEnable.classList.toggle('hidden', !isOffer || !supported);
+  acBannerCancel.classList.toggle('hidden', !!isOffer);
+  acBanner.classList.toggle('ac-banner-offer', !!isOffer);
   acBanner.classList.remove('hidden');
 }
+
 function hideAcBanner() {
   if (acCountdownTimer) { clearInterval(acCountdownTimer); acCountdownTimer = null; }
   acBanner.classList.add('hidden');
 }
+
 acBannerCancel.onclick = () => {
   if (ws && isConnected) ws.send(JSON.stringify({ type: 'cancel_auto_continue' }));
   hideAcBanner();
 };
+
+// Turning the toggle on is all this does: the server schedules the resume for
+// the limit that's still in force, and answers with auto_continue_pending, which
+// swaps this banner into its counting-down form.
+acBannerEnable.onclick = () => {
+  if (!ws || !isConnected) return;
+  acBannerEnable.disabled = true;
+  autoContinueToggle.checked = true;
+  ws.send(JSON.stringify({ type: 'set_auto_continue', enabled: true }));
+  setTimeout(() => { acBannerEnable.disabled = false; }, 1500);
+};
+
+// The banner scrolls with nothing and is gone after a reload; this marks the
+// place in the conversation where it actually broke off, and is still there
+// tomorrow morning.
+function appendLimitNotice({ resetsAt, scheduled, supported }) {
+  endToolGroup();
+  lastAssistantBubble = null;
+  // Replace any earlier notice for the same limit rather than stacking them.
+  messagesEl.querySelectorAll('.limit-notice').forEach((n) => n.remove());
+  const { at } = limitWhen(resetsAt);
+  const div = document.createElement('div');
+  div.className = 'limit-notice';
+
+  const head = document.createElement('div');
+  head.className = 'limit-notice-head';
+  head.textContent = '⏳ Usage limit reached';
+  div.appendChild(head);
+
+  const when = document.createElement('div');
+  when.textContent = resetsAt ? `It resets at ${at}.` : 'It will reset shortly.';
+  div.appendChild(when);
+
+  const outcome = document.createElement('div');
+  outcome.className = scheduled ? 'limit-notice-ok' : 'limit-notice-off';
+  outcome.textContent = scheduled
+    ? `This chat will carry on by itself at ${at} — you can close this page.`
+    : supported
+      ? 'Auto-continue is off, so nothing will happen until you send another prompt.'
+      : 'Auto-continue needs a Claude subscription sign-in, so nothing will happen until you send another prompt.';
+  div.appendChild(outcome);
+
+  messagesEl.appendChild(div);
+  scrollBottom();
+}
 
 // Restore + persist the permission mode so it survives navigating away. The
 // app's default_permission_mode (sent as a 'config' message) fills in when
@@ -1779,6 +2137,7 @@ function setHeaderHidden(hidden) {
 }
 
 messagesEl.addEventListener('scroll', () => {
+  onMessagesScroll();
   const st = messagesEl.scrollTop;
   const dist = messagesEl.scrollHeight - st - messagesEl.clientHeight;
   stickToBottom = dist <= SCROLL_STICK_PX;
@@ -1798,8 +2157,131 @@ messagesEl.addEventListener('scroll', () => {
 function scrollBottom(force) {
   if (force) stickToBottom = true;
   if (suppressAutoScroll) return;
-  if (stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (stickToBottom) {
+    markProgrammaticScroll();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
 }
+
+// ── Prompt navigation (↑/↓) ──────────────────────────────────────────────────
+// Step through your own messages — the landmarks you actually scroll a long
+// chat looking for. The arrows appear on a real scroll gesture and fade after a
+// couple of seconds of stillness, so they're never just sitting on the screen.
+
+// The app's own scrolling (following a streaming reply, or a jump) is not a
+// gesture: without this, every streamed token would flash the arrows on.
+let programmaticScrollAt = 0;
+function markProgrammaticScroll() { programmaticScrollAt = Date.now(); }
+function isProgrammaticScroll() { return Date.now() - programmaticScrollAt < 400; }
+
+// Deliberately re-queried rather than kept as a list: clearScreen() and a
+// history replay both replace every node, and a stale array of detached bubbles
+// is exactly the bug this would otherwise invite. Memoised on something cheap
+// that changes whenever the transcript does.
+let promptCache = { key: '', nodes: [] };
+function userPrompts() {
+  const key = String(messagesEl.childElementCount);
+  if (promptCache.key !== key) {
+    promptCache = { key, nodes: [...messagesEl.querySelectorAll('.bubble-user')] };
+  }
+  return promptCache.nodes;
+}
+
+// A prompt within this many px of the top edge counts as "the one you're on",
+// so a jump landing exactly on the boundary can't bounce back on the next press.
+const NAV_EDGE = 8;
+
+function promptOffset(node, containerTop) {
+  return node.getBoundingClientRect().top - containerTop;
+}
+
+// Prompt tops increase in document order, so "first/last past the edge" is a
+// binary search — this runs off a scroll handler and must stay cheap.
+function findNextPrompt(nodes) {
+  if (!nodes.length) return null;
+  const top = messagesEl.getBoundingClientRect().top;
+  let lo = 0, hi = nodes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (promptOffset(nodes[mid], top) > NAV_EDGE) hi = mid; else lo = mid + 1;
+  }
+  return lo < nodes.length ? nodes[lo] : null;
+}
+
+function findPrevPrompt(nodes) {
+  if (!nodes.length) return null;
+  const top = messagesEl.getBoundingClientRect().top;
+  let lo = -1, hi = nodes.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (promptOffset(nodes[mid], top) < -NAV_EDGE) lo = mid; else hi = mid - 1;
+  }
+  return lo >= 0 ? nodes[lo] : null;
+}
+
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function jumpToNode(node) {
+  if (!node || !node.isConnected) return;
+  markProgrammaticScroll();
+  node.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1600);
+}
+
+// Each arrow hides independently when there's nothing left that way — which is
+// what makes reaching an end unambiguous rather than dimmed-but-still-there.
+function refreshPromptNav() {
+  const nodes = userPrompts();
+  // Having a target below isn't enough: at the very bottom of the scroll range
+  // nothing more can be brought up to the top edge, so the last prompt still
+  // counts as "next" while pressing it visibly does nothing.
+  const atMax = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 2;
+  promptPrevBtn.classList.toggle('hidden', !findPrevPrompt(nodes));
+  promptNextBtn.classList.toggle('hidden', atMax || !findNextPrompt(nodes));
+}
+
+const NAV_IDLE_MS = 2200;
+let navIdleTimer = null;
+
+function hidePromptNav() {
+  promptPrevBtn.classList.add('hidden');
+  promptNextBtn.classList.add('hidden');
+  clearTimeout(navIdleTimer);
+  navIdleTimer = null;
+}
+
+function wakePromptNav() {
+  refreshPromptNav();
+  clearTimeout(navIdleTimer);
+  navIdleTimer = setTimeout(hidePromptNav, NAV_IDLE_MS);
+}
+
+// rAF-throttled for the same reason the header auto-hide is: refreshPromptNav
+// reads layout, and doing that on every scroll event forces a reflow per frame.
+let navFrame = null;
+function onMessagesScroll() {
+  if (isProgrammaticScroll()) return;
+  if (messagesEl.scrollHeight - messagesEl.clientHeight <= 0) return;
+  if (navFrame) return;
+  navFrame = requestAnimationFrame(() => {
+    navFrame = null;
+    wakePromptNav();
+  });
+}
+
+for (const btn of [promptPrevBtn, promptNextBtn]) {
+  // A press must not leave focus (and its ring) sitting on the button after the
+  // arrows have faded away.
+  btn.addEventListener('mousedown', (e) => e.preventDefault());
+  btn.addEventListener('mouseenter', () => { clearTimeout(navIdleTimer); navIdleTimer = null; });
+  btn.addEventListener('mouseleave', () => {
+    clearTimeout(navIdleTimer);
+    navIdleTimer = setTimeout(hidePromptNav, NAV_IDLE_MS);
+  });
+}
+promptPrevBtn.addEventListener('click', () => { jumpToNode(findPrevPrompt(userPrompts())); wakePromptNav(); });
+promptNextBtn.addEventListener('click', () => { jumpToNode(findNextPrompt(userPrompts())); wakePromptNav(); });
 
 // ── Start ──────────────────────────────────────────────────────────────────
 

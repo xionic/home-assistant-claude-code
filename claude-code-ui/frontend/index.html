@@ -123,13 +123,27 @@
       </div>
     </div>
 
-    <div id="messages" class="messages"></div>
+    <!-- The prompt arrows float over the transcript, so they anchor to this
+         wrapper rather than to #messages itself: absolutely-positioned children
+         of a scroll container scroll away with its content. -->
+    <div id="chat-scroll" class="chat-scroll">
+      <div id="messages" class="messages"></div>
+      <button id="prompt-prev" class="prompt-nav prompt-nav-up hidden" type="button"
+              title="Previous message of yours" aria-label="Previous message of yours">&#8593;</button>
+      <button id="prompt-next" class="prompt-nav prompt-nav-down hidden" type="button"
+              title="Next message of yours" aria-label="Next message of yours">&#8595;</button>
+    </div>
 
     <div id="permission-overlay" class="permission-overlay hidden">
       <div class="permission-card">
-        <div id="perm-header" class="perm-header">
-          <span id="perm-tool-chip" class="perm-tool-chip"></span>
-          <h3 id="perm-title" class="perm-title">Allow tool use?</h3>
+        <div class="card-head">
+          <div id="perm-header" class="perm-header">
+            <span id="perm-tool-chip" class="perm-tool-chip"></span>
+            <h3 id="perm-title" class="perm-title">Allow tool use?</h3>
+          </div>
+          <button id="perm-later" class="card-later" type="button"
+            title="Close this and keep the request — the turn stays paused until you answer."
+            aria-label="Decide later">&#10005;</button>
         </div>
         <pre id="perm-input" class="perm-input"></pre>
         <div class="perm-buttons">
@@ -143,10 +157,20 @@
 
     <div id="dialog-overlay" class="permission-overlay hidden">
       <div class="permission-card dialog-card">
-        <h3 id="dialog-title" class="perm-title">Question</h3>
+        <div class="card-head">
+          <h3 id="dialog-title" class="perm-title">Question</h3>
+          <div class="card-head-right">
+            <span id="dialog-progress" class="dialog-progress hidden"></span>
+            <button id="dialog-later" class="card-later" type="button"
+              title="Close this and keep the question — the turn stays paused until you answer."
+              aria-label="Answer later">&#10005;</button>
+          </div>
+        </div>
         <div id="dialog-body" class="dialog-body"></div>
         <div class="perm-buttons">
-          <button id="dialog-cancel" class="btn btn-deny">Cancel</button>
+          <button id="dialog-skip" class="btn btn-deny"
+            title="Carry on without answering — Claude decides for itself.">Skip</button>
+          <button id="dialog-back" class="btn btn-deny hidden">Back</button>
           <button id="dialog-submit" class="btn btn-allow">Submit</button>
         </div>
       </div>
@@ -155,7 +179,17 @@
     <div id="auto-continue-banner" class="ac-banner hidden">
       <span class="ac-banner-icon" aria-hidden="true">&#9203;</span>
       <span id="ac-banner-text" class="ac-banner-text"></span>
+      <button id="ac-banner-enable" class="ac-banner-action hidden"
+        title="Pick this chat up by itself when the limit lifts">Resume automatically</button>
       <button id="ac-banner-cancel" class="ac-banner-cancel" title="Cancel auto-continue">Cancel</button>
+    </div>
+
+    <!-- A question or permission request that's still waiting after the popup was
+         closed to read the chat. Not a second popup: the way back to the one that
+         is already there. -->
+    <div id="question-strip" class="question-strip hidden">
+      <span id="question-strip-text" class="question-strip-text"></span>
+      <button id="question-strip-open" class="ac-banner-action">Answer</button>
     </div>
 
     <form id="input-form" class="input-form">
