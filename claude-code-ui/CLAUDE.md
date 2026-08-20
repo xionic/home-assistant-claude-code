@@ -5,15 +5,16 @@ A browser-based Claude Code interface running as an HA app. Provides a chat UI b
 ## Architecture
 
 ```
-browser  ←→  WebSocket  ←→  server/index.js  ←→  @anthropic-ai/claude-agent-sdk
+browser  ←→  WebSocket  ←→  server/lib/  ←→  @anthropic-ai/claude-agent-sdk
                                   ↓
                           ha-ws-client (third-party Go binary; states, calls, templates)
                           ha-tools (this app's helpers: history / stats / lovelace / logs)
                           plugins/homeassistant-config/
 ```
 
-- **`server/index.js`** — Express + WebSocket server; calls `query()` from Agent SDK; streams events to browser
-- **`frontend/`** — Single-page chat UI (vanilla JS, no build step)
+- **`server/index.js`** — the composition root; wires `server/lib/` together and listens
+- **`server/lib/`** — one module per concern (see **Server layout** below)
+- **`frontend/app.js`** — the browser composition root; `frontend/js/` holds the modules (see **Frontend layout**)
 - **`run.sh`** — App entrypoint; initialises `/data` environment, runs context generation, starts Node
 - **`plugins/homeassistant-config/`** — Local plugin with SKILL.md and pre-save YAML validation hook
 - **`scripts/`** — `ha-context.sh` (writes the generated HA context to `~/.claude/ha-context.md`), `browser-capture.sh` (auth flow URL capture), and the `ha-tools` helper suite:
@@ -23,6 +24,91 @@ browser  ←→  WebSocket  ←→  server/index.js  ←→  @anthropic-ai/claud
   - `lib/ha-time.cjs` — one clock for all output (see "Time" below)
   - `lib/ha-rest.cjs` — the few Supervisor REST endpoints with no WebSocket equivalent
   - `ha-logs.sh` — Supervisor journald log reader, reached as `ha-tools logs`
+
+### Server layout
+
+`server/index.js` is a composition root and nothing else: it wires the modules,
+loads the persisted state, and listens. Everything with behaviour lives in
+`server/lib/`, one module per concern.
+
+| Module | Owns |
+|---|---|
+| `config.js` | every environment variable and derived path |
+| `state.js` | the mutable values that span the process (`runtime`) |
+| `broadcast.js` | connected sockets, `send()` / `broadcast()` |
+| `auth.js` | credentials, auth-error detection, the device-login flow |
+| `sessions.js` | Claude Code's on-disk transcript store, and reading it |
+| `dialogs.js` | AskUserQuestion interception and pending questions |
+| `permissions.js` | the `/addon_configs` guard and `canUseTool` |
+| `auto-continue.js` | scheduling and firing a resume after a usage limit |
+| `run-query.js` | one turn: SDK options in, wire events out |
+| `ws-protocol.js` | the greeting, and a dispatch table of client messages |
+| `diag.js` | the `/diag` routes (registered only when `debug` is on) |
+| `uploads.js`, `ha-links.js`, `mcp.js`, `exec.js`, `log.js` | attachments, entity link targets, MCP hygiene, shelling out, logging |
+
+Rules that keep it readable: **no top-level side effects** beyond pure
+constants (the composition root does the starting); anything genuinely shared
+and mutable goes on `runtime` in `state.js` rather than becoming another
+file-scope `let`; and the module graph is **one-way** — `run-query` imports
+`auto-continue`, and the resume runner is injected back at startup rather than
+closing the cycle.
+
+**Adding a `COPY` to the Dockerfile:** `server/lib/` is copied as a directory.
+A new top-level file under `server/` needs its own `COPY` line, and
+`ARG SCRIPTS_VER` must be bumped or Docker will serve the cached layer.
+
+### Frontend layout
+
+`frontend/app.js` is likewise a composition root; the modules are in
+`frontend/js/`, loaded with `<script type="module">`. **There is no build step
+and there should not be one** — the files are served straight from the
+container and loaded through the ingress, and relative module specifiers
+resolve correctly there.
+
+`marked.min.js` stays a classic `<script>` before the module (it sets a
+global; classic scripts run before deferred modules).
+
+The one thing to know before editing: an ES module's exported binding is
+**read-only in the importing module**, so a value more than one module writes
+cannot be an exported `let`. Those live on the `S` object in `js/state.js`.
+Anything only one module touches stays a plain `let` in that module — do not
+add to `S` reflexively.
+
+## Testing
+
+```bash
+cd claude-code-ui
+npm install                # dev-only; server/package.json is the runtime manifest
+npm test                   # unit + server integration + CLI
+npm run test:browser       # the real UI in headless Chrome (needs Chrome; CHROME_PATH to point it)
+npm run test:live          # smoke test against the deployed app on the real HA box
+npm run test:live -- --with-agent    # ...plus one real agent turn (spends tokens)
+npm run test:live -- --mutating      # ...plus a write to the live conversation
+```
+
+`test/` is **not** copied into the image, and its dependencies live in
+`claude-code-ui/package.json` rather than `server/package.json` — adding a test
+dependency must never bust the Dockerfile's `npm install` layer. A unit test
+asserts the two manifests agree on anything they share.
+
+| Layer | What it does |
+|---|---|
+| `test/unit/` | pure functions — transcript parsing, the clock, permission labels |
+| `test/integration/` | boots the real `server/index.js` in a child process and drives the real WebSocket protocol. The Agent SDK is replaced by a **scripted stub** via a module-resolution hook (`--import test/helpers/sdk-loader.mjs`), so production code is untouched and no 240 MB SDK is needed |
+| `test/cli/` | runs the real `ha-tools` / `ha-logs` / `ha-context` against a fake Home Assistant (WebSocket + Supervisor REST) |
+| `test/browser/` | drives the actual UI in headless Chrome, and asserts a clean console — in a no-build-step app there is nothing else to catch a typo'd identifier |
+| `test/live/` | the part only the real thing can answer: does the Supervisor token authenticate, do the tools reach a live instance, is the log endpoint still there. Read-only by default |
+
+The integration tests are **characterisation tests**: they were written against
+the behaviour as it was, and they are what makes a restructure safe. When one
+fails after a change, the question is whether the behaviour was meant to change
+— not whether to update the assertion.
+
+The live suite needs the **`debug` app option on**; without it the `/diag`
+routes are not registered and every probe returns the SPA. It reaches the
+container through SSH (the app's IP is on Docker's internal network) — override
+with `HA_SSH_HOST` / `HA_SSH_PORT` / `HA_SSH_USER` / `HA_SSH_KEY`, or pass
+`--local` when running inside the container.
 
 ### Agent memory (CLAUDE.md)
 
@@ -341,9 +427,13 @@ Reported symptom: a response stops coming, then resumes minutes later (not a tru
 | `build.yaml` | Docker build args (base image) |
 | `Dockerfile` | Image build: Node, Agent SDK binary, ha-ws-client, ha-lovelace/ha-history/ha-stats wrappers, plugin |
 | `run.sh` | Entrypoint: env init, packages, HA context, start server |
-| `server/index.js` | WebSocket server, Agent SDK integration, permission handling |
+| `server/index.js` | Composition root — wires `server/lib/` and listens |
+| `server/lib/` | The server proper, one module per concern (see **Server layout**) |
 | `frontend/index.html` | Chat UI shell |
-| `frontend/app.js` | WebSocket client, message rendering |
+| `frontend/app.js` | Browser composition root |
+| `frontend/js/` | The UI modules (see **Frontend layout**) |
 | `frontend/styles.css` | Dark theme styles |
+| `package.json` | Dev/test manifest — **not** shipped in the image |
+| `test/` | Unit, integration, CLI, browser and live suites (see **Testing**) |
 | `plugins/homeassistant-config/PLUGIN.md` | Plugin manifest |
 | `plugins/homeassistant-config/skills/homeassistant-config/SKILL.md` | HA YAML patterns + tool docs |
