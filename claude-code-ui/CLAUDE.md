@@ -74,6 +74,24 @@ cannot be an exported `let`. Those live on the `S` object in `js/state.js`.
 Anything only one module touches stays a plain `let` in that module — do not
 add to `S` reflexively.
 
+## Deploying to a Home Assistant box
+
+```bash
+tools/deploy-to-ha.sh              # copy + rebuild
+tools/deploy-to-ha.sh --prune      # ...and list files on the box that no longer exist locally
+tools/deploy-to-ha.sh --live       # ...and run the live smoke suite afterwards
+tools/deploy-to-ha.sh --no-rebuild # copy only
+```
+
+It lives outside `claude-code-ui/` on purpose — CI triggers on
+`claude-code-ui/**`, and editing a deploy script should not queue an image
+build. The manual sequence is still documented under **Deploy Workflow** below;
+the script exists because that sequence has traps in it (chiefly: copying the
+repo restores the `image:` key, which then has to be stripped again or the
+rebuild fails with `AppRebuildImageBasedError`).
+
+**A rebuild restarts the app**, so any in-progress chat drops.
+
 ## Testing
 
 ```bash
@@ -96,7 +114,7 @@ asserts the two manifests agree on anything they share.
 | `test/unit/` | pure functions — transcript parsing, the clock, permission labels |
 | `test/integration/` | boots the real `server/index.js` in a child process and drives the real WebSocket protocol. The Agent SDK is replaced by a **scripted stub** via a module-resolution hook (`--import test/helpers/sdk-loader.mjs`), so production code is untouched and no 240 MB SDK is needed |
 | `test/cli/` | runs the real `ha-tools` / `ha-logs` / `ha-context` against a fake Home Assistant (WebSocket + Supervisor REST) |
-| `test/browser/` | drives the actual UI in headless Chrome, and asserts a clean console — in a no-build-step app there is nothing else to catch a typo'd identifier |
+| `test/browser/` | drives the actual UI in headless Chrome, and asserts a clean console — in a no-build-step app there is nothing else to catch a typo'd identifier. `ui.test.mjs` is the main flow, `modules.test.mjs` proves every module loads and runs, `interactions.test.mjs` goes deeper into the paths no wire assertion can stand in for (setting a question aside, paging a dialog, opening a folded run, find navigation, scroll anchoring) |
 | `test/live/` | the part only the real thing can answer: does the Supervisor token authenticate, do the tools reach a live instance, is the log endpoint still there. Read-only by default |
 
 The integration tests are **characterisation tests**: they were written against
