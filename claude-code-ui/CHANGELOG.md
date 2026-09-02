@@ -1,3 +1,8 @@
+## Unreleased
+- **Switching to another chat while Claude is working now asks first.** Picking a past conversation from Sessions silently stopped the turn in progress, which looked exactly like the reply having been lost. It now says what will happen and waits for you — and the same warning covers the new-chat button and `/new`, which could previously slip past it
+- **`ha-tools config-check` catches the errors it used to miss.** It reported "valid" for a config Home Assistant would load *without* the entity you had just written: a bad option in a `template:` or platform entry doesn't stop the config loading, it just makes Home Assistant drop that entity and carry on — and the endpoint the check relied on never mentioned it. Claude followed the tool's own advice, reloaded, and moved on believing a blind was set up that did not exist. The check now reads what Home Assistant logs *while it is checking*, names the file, line and key, and fails
+- **`ha-tools reload` verifies the reload instead of the phone call.** It used to report success whenever the request went through. It now surfaces the same errors, and `--expect <entity_id>` will fail if the entity you just wrote doesn't actually appear
+
 ## 1.10.0
 - **Updated to the current Claude Code engine** (Agent SDK 0.3.237, from 0.3.165 — about two and a half months of fixes and model updates). Nothing changes in how the app is used
 - **The slash-command menu only lists commands that do something here.** Commands that exist to control a terminal — `/exit`, `/statusline` and the like — were being offered in the browser, where there is no terminal to exit; they are now filtered out

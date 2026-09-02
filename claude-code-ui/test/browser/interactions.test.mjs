@@ -338,3 +338,152 @@ describe('a draft left in the box', { skip }, () => {
 
   test('with a clean console', () => assert.deepEqual(errors, []));
 });
+
+describe('leaving a chat while Claude is still working', { skip }, () => {
+  let h, browser, page, errors, spy;
+  before(async () => {
+    h = await startServer({
+      // One long run, so the whole block executes with a turn in flight.
+      scenario: { runs: [{ steps: [{ text: 'thinking about it' }, { sleep: 30000 }] }] },
+      sessions: {
+        'aaaaaaaa-0000-0000-0000-000000000001': [userLine('what is the hall light doing')],
+        'bbbbbbbb-0000-0000-0000-000000000002': [userLine('the boiler again')],
+      },
+    });
+    // A second socket, so "nothing was sent" is asserted against the server's
+    // own broadcasts rather than against the DOM of the tab under test.
+    spy = await h.connect();
+    await spy.waitFor('history');
+    ({ browser, page, errors } = await launch(h));
+
+    await page.type('#prompt-input', 'take your time');
+    await page.click('#send-btn');
+    await page.waitForFunction(
+      () => document.getElementById('send-btn').classList.contains('stop'), { timeout: 5000 });
+  });
+  after(async () => { if (browser) await browser.close(); if (h) await h.stop(); });
+
+  // Opening the panel asks the server for a fresh list, which re-renders it —
+  // so settle before clicking, or the click lands on a node already replaced.
+  const openPanel = async () => {
+    await page.click('#sessions-btn');
+    await page.waitForSelector('#sessions-panel:not(.hidden) .session-item', { timeout: 5000 });
+    await new Promise((r) => setTimeout(r, 250));
+  };
+
+  test('clicking another chat asks first, and sends nothing yet', async () => {
+    const before = spy.all('history').length;
+    await openPanel();
+    await page.click('.session-item');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+
+    assert.match(await page.$eval('#confirm-title', (el) => el.textContent), /still working/i);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(spy.all('history').length, before,
+      'the switch was sent before the user had answered');
+  });
+
+  test('staying here leaves the panel open and the turn running', async () => {
+    await page.click('#confirm-no');
+    await page.waitForSelector('#confirm-overlay.hidden', { timeout: 5000 });
+
+    assert.equal(await page.$eval('#sessions-panel', (el) => el.classList.contains('hidden')), false,
+      'cancelling closed the panel, so the user cannot pick a different chat');
+    assert.equal(await page.$eval('#send-btn', (el) => el.classList.contains('stop')), true,
+      'the turn stopped anyway');
+  });
+
+  test('Escape and a click on the backdrop both mean stay', async () => {
+    const before = spy.all('history').length;
+
+    await page.click('.session-item');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#confirm-overlay.hidden', { timeout: 5000 });
+
+    await page.click('.session-item');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    // The backdrop is the overlay itself; click a corner well clear of the card.
+    await page.mouse.click(8, 8);
+    await page.waitForSelector('#confirm-overlay.hidden', { timeout: 5000 });
+
+    assert.equal(spy.all('history').length, before,
+      'dismissing the warning switched chats anyway');
+  });
+
+  test('the new-chat button asks too, and /new cannot get round it', async () => {
+    await page.click('#new-session-btn');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    assert.match(await page.$eval('#confirm-yes', (el) => el.textContent), /new chat/i);
+    await page.click('#confirm-no');
+    await page.waitForSelector('#confirm-overlay.hidden', { timeout: 5000 });
+
+    const before = spy.all('cleared').length;
+    await page.type('#prompt-input', '/new');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    await page.click('#confirm-no');
+    await page.waitForSelector('#confirm-overlay.hidden', { timeout: 5000 });
+    assert.equal(spy.all('cleared').length, before, '/new started a new chat without asking');
+  });
+
+  test('going ahead switches, and the panel closes', async () => {
+    const before = spy.all('history').length;
+    await openPanel();
+    await page.click('.session-item');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    await page.click('#confirm-yes');
+
+    await spy.waitFor((m) => m.type === 'history' && spy.all('history').length > before);
+    await page.waitForSelector('#sessions-panel.hidden', { timeout: 5000 });
+  });
+
+  test('with a clean console', () => assert.deepEqual(errors, []));
+});
+
+describe('leaving a chat when nothing is running', { skip }, () => {
+  let h, browser, page, errors, spy;
+  before(async () => {
+    h = await startServer({
+      sessions: { 'cccccccc-0000-0000-0000-000000000003': [userLine('an old conversation')] },
+    });
+    spy = await h.connect();
+    await spy.waitFor('history');
+    ({ browser, page, errors } = await launch(h));
+  });
+  after(async () => { if (browser) await browser.close(); if (h) await h.stop(); });
+
+  test('switches straight away — the guard must not become a nag', async () => {
+    const before = spy.all('history').length;
+    await page.click('#sessions-btn');
+    await page.waitForSelector('#sessions-panel:not(.hidden) .session-item', { timeout: 5000 });
+    await new Promise((r) => setTimeout(r, 250));
+    await page.click('.session-item');
+
+    await spy.waitFor((m) => m.type === 'history' && spy.all('history').length > before);
+    assert.equal(await page.$eval('#confirm-overlay', (el) => el.classList.contains('hidden')), true,
+      'an idle app asked before switching');
+  });
+
+  test('and a new chat starts without asking', async () => {
+    const before = spy.all('cleared').length;
+    await page.click('#new-session-btn');
+    await spy.waitFor((m) => m.type === 'cleared' && spy.all('cleared').length > before);
+    assert.equal(await page.$eval('#confirm-overlay', (el) => el.classList.contains('hidden')), true);
+  });
+
+  test('deleting a conversation asks, in the app rather than the browser', async () => {
+    await page.click('#sessions-btn');
+    await page.waitForSelector('#sessions-panel:not(.hidden) .session-item', { timeout: 5000 });
+    await new Promise((r) => setTimeout(r, 250));
+    await page.click('.session-del');
+    await page.waitForSelector('#confirm-overlay:not(.hidden)', { timeout: 5000 });
+    assert.match(await page.$eval('#confirm-title', (el) => el.textContent), /delete/i);
+
+    await page.click('#confirm-yes');
+    await page.waitForFunction(
+      () => document.querySelectorAll('#sessions-list .session-item').length === 0, { timeout: 5000 });
+  });
+
+  test('with a clean console', () => assert.deepEqual(errors, []));
+});

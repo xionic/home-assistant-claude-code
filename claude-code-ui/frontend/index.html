@@ -176,6 +176,22 @@
       </div>
     </div>
 
+    <!-- A yes/no the app asks on its own account. The two cards above relay a
+         question from the server and send an answer back; this one has no
+         protocol behind it — it guards actions that throw away work. -->
+    <div id="confirm-overlay" class="permission-overlay hidden">
+      <div class="permission-card confirm-card">
+        <div class="card-head">
+          <h3 id="confirm-title" class="perm-title"></h3>
+        </div>
+        <p id="confirm-body" class="confirm-body"></p>
+        <div class="perm-buttons">
+          <button id="confirm-no" class="btn btn-deny" type="button"></button>
+          <button id="confirm-yes" class="btn btn-danger" type="button"></button>
+        </div>
+      </div>
+    </div>
+
     <div id="auto-continue-banner" class="ac-banner hidden">
       <span class="ac-banner-icon" aria-hidden="true">&#9203;</span>
       <span id="ac-banner-text" class="ac-banner-text"></span>

@@ -348,6 +348,7 @@ ha-tools automation show automation.x         # the config HA has loaded right n
 ha-tools automation yaml automation.x         # its automations.yaml block, numbered
 ha-tools config-check                         # validate BEFORE reloading (exit 1 = invalid)
 ha-tools reload                               # reload automations (or: reload all)
+ha-tools reload template --expect cover.x     # ...and fail if the entity isn't there
 ha-tools trace-watch automation.x --timeout 2h  # block until it really fires
 
 # Times from ha-tools are in HA's timezone with an offset (2026-08-12 23:27:42+01:00);

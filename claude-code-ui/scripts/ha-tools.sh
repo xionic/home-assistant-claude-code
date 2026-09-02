@@ -42,8 +42,10 @@ Automations:
   trace-watch <id> [...]        Block until it actually fires, then report the trace
 
 Change and verify:
-  config-check                  Validate the config HA would load (exits 1 if invalid)
-  reload [domain]               Reload automations (default) or another domain
+  config-check                  Validate the config, incl. per-entity errors HA
+                                only logs (exits 1 if anything is wrong)
+  reload [domain]               Reload automations (default) or another domain;
+                                --expect <entity_id> asserts it actually exists
   lovelace <list|get|save|...>  Dashboards — WebSocket only, REST 404s      (ha-lovelace)
   ws <...>                      Entity states, service calls, templates,
                                 registry search                          (ha-ws-client)
@@ -58,6 +60,7 @@ Examples:
   ha-tools history sensor.temperature --days 7 --format tsv
   ha-tools automation show automation.hall_light_off
   ha-tools config-check && ha-tools reload automation
+  ha-tools reload template --expect cover.nick_blind   # ...and prove it exists
   ha-tools trace-watch automation.hall_light_off --timeout 2h
   ha-tools logs --errors -n 500
 USAGE

@@ -3,6 +3,7 @@
  */
 import { S } from './state.js';
 import { sessionsBtn, sessionsListEl, sessionsPanel } from './dom.js';
+import { confirmAction, confirmInterrupt } from './confirm.js';
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
 export function relTime(ms) {
@@ -41,15 +42,31 @@ export function renderSessions() {
     del.className = 'session-del';
     del.textContent = '✕';
     del.title = 'Delete session';
-    del.onclick = (e) => {
+    del.onclick = async (e) => {
       e.stopPropagation();
-      if (confirm('Delete this session permanently?')) {
-        if (S.ws && S.isConnected) S.ws.send(JSON.stringify({ type: 'session_delete', id: s.id }));
-      }
+      const ok = await confirmAction({
+        title: 'Delete this conversation?',
+        body: 'It will be removed from the store permanently. This cannot be undone.',
+        confirm: 'Delete',
+        cancel: 'Keep it',
+      });
+      if (!ok) return;
+      if (S.ws && S.isConnected) S.ws.send(JSON.stringify({ type: 'session_delete', id: s.id }));
     };
 
-    item.onclick = () => {
-      if (s.id !== S.activeSessionId && S.ws && S.isConnected) {
+    item.onclick = async () => {
+      if (s.id === S.activeSessionId) return closeSessions();
+      // The server aborts the active query on session_switch, so this is the
+      // last point at which the turn can be saved.
+      if (S.isRunning) {
+        const ok = await confirmInterrupt({
+          body: 'Switching to another chat will stop what it is doing now. Everything '
+              + 'written so far is already saved, but the rest of this turn will not be finished.',
+          confirm: 'Stop and switch',
+        });
+        if (!ok) return;   // stay put, panel still open, nothing sent
+      }
+      if (S.ws && S.isConnected) {
         S.ws.send(JSON.stringify({ type: 'session_switch', id: s.id }));
       }
       closeSessions();

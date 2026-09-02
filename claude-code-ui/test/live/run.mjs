@@ -175,6 +175,12 @@ async function main() {
     const out = await inContainer('ha-tools config-check');
     const parsed = JSON.parse(out);
     assert(parsed.result === 'valid', `config is ${parsed.result}: ${parsed.errors}`);
+    // The endpoint answering "valid" is not on its own an all-clear: per-entity
+    // errors only reach the Core log. A clean instance must report neither.
+    assert(!parsed.platform_errors,
+      `entities are being dropped: ${JSON.stringify(parsed.platform_errors)}`);
+    assert(!parsed.log_scan,
+      `the check could not read the Core log, so it proved less than it looks: ${parsed.log_scan}`);
   });
 
   await check('ha-tools automation list returns real automations', async () => {

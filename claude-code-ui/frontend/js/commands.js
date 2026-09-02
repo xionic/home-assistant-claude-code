@@ -3,7 +3,7 @@
  * and the autocomplete menu that offers them.
  */
 import { S } from './state.js';
-import { doNewSession, resizeTextarea, runUiCommand, updateSendBtn } from './composer.js';
+import { requestNewSession, resizeTextarea, runUiCommand, updateSendBtn } from './composer.js';
 import { cmdMenu, messagesEl, newSessionBtn, promptInput, sessionsBtn, sessionsPanel } from './dom.js';
 import { updateCtxHint } from './model.js';
 
@@ -150,12 +150,9 @@ export function showHelp() {
   appendInfoBubble('Available commands:\n' + lines.join('\n'));
 }
 
-newSessionBtn.onclick = () => {
-  // The current session is preserved in the store (browsable via Sessions), so
-  // only confirm if a query is actively running.
-  if (S.isRunning && !confirm('A response is still running. Start a new chat anyway?')) return;
-  doNewSession();
-};
+// The current session is preserved in the store (browsable via Sessions), so
+// requestNewSession only asks when a query is actively running.
+newSessionBtn.onclick = () => { requestNewSession(); };
 
 sessionsBtn.onclick = (e) => {
   e.stopPropagation();

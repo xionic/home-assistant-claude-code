@@ -25,7 +25,7 @@ export const TOKEN = 'fake-supervisor-token';
  * commands — { 'get_config': result | (msg) => result }. A handler may throw to
  *            produce HA's `success:false` error shape.
  * rest      — { 'core/api/config/core/check_config': result | fn }
- * logs      — { 'core/logs': string } (served as text/plain, ANSI and all)
+ * logs      — { 'core/logs': string | (req) => string } (text/plain, ANSI and all)
  * status    — { 'core/logs': 404 } to force an HTTP status
  * authFails — reject the auth handshake
  */
@@ -42,8 +42,11 @@ export async function startFakeHa({ commands = {}, rest = {}, logs = {}, status 
       return res.end(`${status[route]}: Not Found`);
     }
     if (route in logs) {
+      // A function, so a test can make the log grow between two reads — which is
+      // exactly what config-check watches for.
+      const body = typeof logs[route] === 'function' ? logs[route](req) : logs[route];
       res.writeHead(200, { 'content-type': 'text/plain' });
-      return res.end(logs[route]);
+      return res.end(body);
     }
     if (route in rest) {
       let body = rest[route];

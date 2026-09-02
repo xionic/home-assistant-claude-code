@@ -348,7 +348,7 @@ actions:
 - Use **ha-history** / **ha-stats** when you need history or long-term statistics over a specific date range (`--days N`, `--from`, `--to`).
 - Use **ha-timeline** when the question involves **more than one entity** — "what happened, in what order?". Do not fetch each entity separately and merge by hand.
 - Use **ha-tools automation show** to see the config HA currently has loaded, and **ha-tools automation yaml** to see that automation's block in `automations.yaml` with line numbers.
-- After editing YAML: **`ha-tools config-check`** (exits non-zero if invalid), then **`ha-tools reload`**. Never hand-roll a `curl` for either.
+- After editing YAML: **`ha-tools config-check`** (exits non-zero if invalid), then **`ha-tools reload`**. Never hand-roll a `curl` for either. Both read the Core log across the operation, so they catch the per-entity errors HA only *logs* — a bad option in a `template:` entry means the entity is silently dropped while the config as a whole still "loads". When you have just written a specific entity, prove it: **`ha-tools reload template --expect cover.nick_blind`**.
 - Use **ha-tools trace-watch** to verify a trigger you changed actually fires. `automation.trigger` skips triggers and conditions, so it proves nothing about the thing you edited.
 - Use **ha-lovelace** for dashboard config (list / get / save). Lovelace lives only on the WebSocket API — the REST endpoints `/api/lovelace/config` and `/api/lovelace/dashboards` return **404** and must not be used.
 - For **YAML-mode dashboards**, edit the dashboard `.yaml` files directly in `/config`.
@@ -494,13 +494,17 @@ ha-tools automation yaml automation.hall_light_off        # its YAML block, numb
 
 # 2. Edit the YAML (Edit tool, or Read with offset/limit for a big file)
 
-# 3. Validate BEFORE reloading — exits non-zero if the config is broken
+# 3. Validate BEFORE reloading — exits non-zero if the config is broken.
+#    This includes the per-entity errors HA only writes to its log: a bad option
+#    in a template/platform entry does NOT stop the config loading, it just
+#    silently drops the entity. config-check reports those as platform_errors.
 ha-tools config-check
 
 # 4. Reload (no restart needed)
 ha-tools reload                    # automations (default)
 ha-tools reload script             # or another domain
 ha-tools reload all                # everything reloadable
+ha-tools reload template --expect cover.nick_blind   # fail if it didn't appear
 
 # 5. Confirm the reload landed, then verify it actually works
 ha-tools automation show automation.hall_light_off        # re-read the loaded config

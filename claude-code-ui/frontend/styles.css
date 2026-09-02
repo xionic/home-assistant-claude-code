@@ -784,6 +784,11 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   background: #1e2a3a; color: #7fb0dd; border-color: #2a4560;
 }
 .btn-always.hidden { display: none; }
+/* The affirmative answer to a confirmation, which is always the destructive
+   branch — it should not be dressed in the same green as "Allow". */
+.btn-danger {
+  background: #3a1e1e; color: #dd8a8a; border-color: #5a2a2a;
+}
 .perm-always-hint {
   margin-top: 8px; text-align: right;
   font-size: 11px; color: var(--text-muted);
@@ -814,6 +819,12 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 .dialog-progress.hidden { display: none; }
 
 /* ── User dialog (AskUserQuestion) ── */
+.confirm-card { max-width: 420px; }
+.confirm-body {
+  font-size: 14px; color: var(--text-muted); line-height: 1.5;
+  margin: 0 0 18px;
+}
+
 .dialog-card { max-width: 540px; }
 .dialog-body { margin: 4px 0 18px; max-height: 55vh; overflow-y: auto; }
 /* One question per page — .hidden is what the paging toggles. */

@@ -252,13 +252,34 @@ describe('automation', () => {
 });
 
 describe('config-check and reload', () => {
+  // Verbatim from Core 2026.8.1. HA writes this *during* the check that answers
+  // "valid", drops the entity, and carries on — the whole reason for the scan.
+  const INVALID_LINE = "2026-08-25 01:15:42.123 ERROR (MainThread) [homeassistant.config] "
+    + "Invalid config for 'template' at templates/nick_blind.yaml, line 21: "
+    + "'position_template' is an invalid option for 'template', check: cover->0->position_template";
+  const QUIET = '2026-08-25 01:10:00.000 INFO (MainThread) [homeassistant.core] Bus:Handling <Event x>';
+
+  /** A Core log that gains `extra` from the second read onwards. */
+  const growingLog = (base, extra) => {
+    let reads = 0;
+    return () => (reads++ === 0 ? base : `${base}\n${extra}`);
+  };
+
   test('a valid config exits 0 and an invalid one exits 1', async () => {
-    const good = await startFakeHa({ rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null } } });
-    const bad = await startFakeHa({ rest: { 'core/api/config/core/check_config': { result: 'invalid', errors: 'bad indentation' } } });
+    const good = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null } },
+      logs: { 'core/logs': QUIET },
+    });
+    const bad = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'invalid', errors: 'bad indentation' } },
+      logs: { 'core/logs': QUIET },
+    });
     try {
       const ok = await runTool('ha-tools', ['config-check'], { ha: good });
       assert.equal(ok.code, 0);
       assert.equal(ok.json.result, 'valid');
+      assert.equal('platform_errors' in ok.json, false, 'a clean log must not invent errors');
+      assert.equal('log_scan' in ok.json, false, 'a scan that worked has nothing to report');
 
       const nope = await runTool('ha-tools', ['config-check'], { ha: bad });
       assert.equal(nope.code, 1, 'a caller must be able to branch on the exit code alone');
@@ -274,6 +295,7 @@ describe('config-check and reload', () => {
         'core/api/services/automation/reload': {},
         'core/api/services/homeassistant/reload_all': {},
       },
+      logs: { 'core/logs': QUIET },
     });
     try {
       const auto = await runTool('ha-tools', ['reload'], { ha });
@@ -286,11 +308,125 @@ describe('config-check and reload', () => {
   });
 
   test('a Supervisor that refuses is an error, not an empty success', async () => {
-    const ha = await startFakeHa({ status: { 'core/api/config/core/check_config': 502 } });
+    const ha = await startFakeHa({
+      status: { 'core/api/config/core/check_config': 502 },
+      logs: { 'core/logs': QUIET },
+    });
     try {
       const r = await runTool('ha-tools', ['config-check'], { ha });
       assert.equal(r.code, 1);
       assert.match(r.stderr, /HTTP 502/);
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('an error HA only logs still fails the check', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null, warnings: null } },
+      logs: { 'core/logs': growingLog(QUIET, INVALID_LINE) },
+    });
+    try {
+      const r = await runTool('ha-tools', ['config-check'], { ha });
+      assert.equal(r.code, 1, 'the endpoint said valid, so this is the whole bug');
+      assert.equal(r.json.result, 'invalid');
+      assert.equal(r.json.errors, null, "the endpoint's own verdict is reported unchanged");
+      assert.equal(r.json.platform_errors.length, 1);
+      assert.deepEqual(
+        { file: r.json.platform_errors[0].file, line: r.json.platform_errors[0].line },
+        { file: 'templates/nick_blind.yaml', line: 21 },
+        'an agent needs the file and line, not just "something is wrong"');
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('an error already in the log is not blamed on this check', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null } },
+      logs: { 'core/logs': `${QUIET}\n${INVALID_LINE}` },   // there before, unchanged after
+    });
+    try {
+      const r = await runTool('ha-tools', ['config-check'], { ha });
+      assert.equal(r.code, 0, 'yesterday\'s error must not fail today\'s check');
+      assert.equal(r.json.result, 'valid');
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('a log it cannot read is reported as such, never as clean', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null } },
+      status: { 'core/logs': 502 },
+    });
+    try {
+      const r = await runTool('ha-tools', ['config-check'], { ha });
+      assert.equal(r.code, 0, "the endpoint's own verdict still stands");
+      assert.match(r.json.log_scan, /unavailable/);
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('--no-log-scan is the old behaviour, exactly', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/config/core/check_config': { result: 'valid', errors: null, warnings: null } },
+      logs: { 'core/logs': growingLog(QUIET, INVALID_LINE) },
+    });
+    try {
+      const r = await runTool('ha-tools', ['config-check', '--no-log-scan'], { ha });
+      assert.equal(r.code, 0);
+      assert.deepEqual(r.json, { result: 'valid', errors: null, warnings: null });
+      assert.equal(ha.requests.some((q) => q.route === 'core/logs'), false,
+        'opting out must not still read the log');
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('reload fails when the reload itself drops an entity', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/services/template/reload': {} },
+      logs: { 'core/logs': growingLog(QUIET, INVALID_LINE) },
+    });
+    try {
+      const r = await runTool('ha-tools', ['reload', 'template'], { ha });
+      assert.equal(r.code, 1, 'the call succeeding is not the reload succeeding');
+      assert.equal(r.json.reloaded, 'template');
+      assert.equal(r.json.platform_errors[0].domain, 'template');
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('reload --expect fails when the entity never appears', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/services/template/reload': {} },
+      logs: { 'core/logs': QUIET },
+      commands: { get_states: [{ entity_id: 'cover.something_else', state: 'open' }] },
+    });
+    try {
+      const r = await runTool('ha-tools',
+        ['reload', 'template', '--expect', 'cover.nick_blind', '--expect-timeout', '2s'], { ha });
+      assert.equal(r.code, 1);
+      assert.deepEqual(r.json.expected, { 'cover.nick_blind': 'missing' });
+    } finally {
+      await ha.close();
+    }
+  });
+
+  test('reload --expect passes when it is there', async () => {
+    const ha = await startFakeHa({
+      rest: { 'core/api/services/template/reload': {} },
+      logs: { 'core/logs': QUIET },
+      commands: { get_states: [{ entity_id: 'cover.nick_blind', state: 'open' }] },
+    });
+    try {
+      const r = await runTool('ha-tools',
+        ['reload', 'template', '--expect', 'cover.nick_blind'], { ha });
+      assert.equal(r.code, 0);
+      assert.deepEqual(r.json.expected, { 'cover.nick_blind': 'present' });
     } finally {
       await ha.close();
     }

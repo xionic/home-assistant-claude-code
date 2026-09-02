@@ -5,6 +5,7 @@
 import { S } from './state.js';
 import { attachments, clearAttachments, fileToDataURL } from './attachments.js';
 import { SEND_ICON, STOP_ICON, UI_COMMANDS, clearScreen, hideCmdMenu, showHelp, showUsage } from './commands.js';
+import { confirmInterrupt } from './confirm.js';
 import { inputForm, permModeSelect, promptInput, sendBtn, statusDot } from './dom.js';
 import { openFind } from './find.js';
 import { scrollBottom } from './scroll.js';
@@ -93,8 +94,25 @@ export function doNewSession() {
   if (S.ws && S.isConnected) S.ws.send(JSON.stringify({ type: 'new_session' }));
 }
 
+/**
+ * Start a new chat, warning first if that would abandon a turn in progress.
+ * Every route to a new chat goes through here — the button, /new — so the guard
+ * cannot be reached around.
+ */
+export async function requestNewSession() {
+  if (S.isRunning) {
+    const ok = await confirmInterrupt({
+      body: 'Starting a new chat will stop what it is doing now. This conversation is '
+          + 'saved either way — you can come back to it from Sessions.',
+      confirm: 'Stop and start a new chat',
+    });
+    if (!ok) return;
+  }
+  doNewSession();
+}
+
 export function runUiCommand(name) {
-  if (name === 'new')   doNewSession();
+  if (name === 'new')   requestNewSession();
   else if (name === 'clear') clearScreen();
   else if (name === 'usage') showUsage();
   else if (name === 'resume') openSessions();

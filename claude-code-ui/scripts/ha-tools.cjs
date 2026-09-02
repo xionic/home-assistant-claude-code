@@ -13,8 +13,8 @@
  *   timeline     <entity_id…> [--days N] [--from] [--to] [--between HH:MM-HH:MM]
  *   lovelace     <list | get | save | create | delete> …
  *   automation   <list | show | yaml> …
- *   config-check
- *   reload       [domain]
+ *   config-check [--no-log-scan]
+ *   reload       [domain] [--expect entity_id] [--no-log-scan]
  *   trace-watch  <automation> [--timeout 15m] [--interval 10s]
  *
  * Two conventions hold across all of them, because the consumer is an agent
@@ -31,7 +31,8 @@
 const fs = require('fs');
 const path = require('path');
 const { run, die, usage, printJSON, timeRange } = require('./lib/ha-ws.cjs');
-const { core } = require('./lib/ha-rest.cjs');
+const { core, coreLogTail } = require('./lib/ha-rest.cjs');
+const { newLines, parseConfigErrors } = require('./lib/ha-log-scan.cjs');
 const { parseDuration, parseWindow, clock, inWindow, toMillis } = require('./lib/ha-time.cjs');
 
 const [sub, ...args] = process.argv.slice(2);
@@ -51,8 +52,9 @@ const USAGE = {
   lovelace: `${CMD} <list | get [url_path] | save <file|-> [url_path] | ` +
     `create <url_path> <title> [--icon mdi:x] [--no-sidebar] [--admin] | delete <url_path>>`,
   automation: `${CMD} <list | show <entity_id|id> | yaml <entity_id|id>> [--utc]`,
-  'config-check': `${CMD}`,
-  reload: `${CMD} [domain]   (default: automation; 'all' reloads everything reloadable)`,
+  'config-check': `${CMD} [--no-log-scan]`,
+  reload: `${CMD} [domain] [--expect <entity_id>]… [--expect-timeout 8s] [--no-log-scan]\n` +
+    `                (default domain: automation; 'all' reloads everything reloadable)`,
   'trace-watch': `${CMD} <entity_id|id> [--timeout 15m] [--interval 10s] [--format text|json] [--utc]`,
 };
 
@@ -514,37 +516,159 @@ function automation() {
   });
 }
 
+/*
+ * Watch the Core log across an operation and report the per-entity config errors
+ * Home Assistant writes while it runs.
+ *
+ * Both config-check and reload need this for the same reason: what they call
+ * reports whether the *call* worked, not whether your config is sound. HA logs
+ * "Invalid config for '<domain>' at <file>, line N: …", drops the entity, and
+ * carries on — so an entity can vanish while both commands report success.
+ *
+ * Best effort, and it says when it was: if the log cannot be read, the caller
+ * keeps the endpoint's own verdict and prints why the scan didn't happen. A
+ * check that couldn't look must never imply that it looked and found nothing.
+ */
+async function scanningLog(enabled, operation) {
+  if (!enabled) return { result: await operation(), errors: [], scanned: false };
+
+  let before = null;
+  let unavailable = null;
+  try {
+    before = await coreLogTail();
+  } catch (e) {
+    unavailable = e.message;
+  }
+
+  const result = await operation();
+
+  if (unavailable) return { result, errors: [], scanned: false, unavailable };
+  let after;
+  try {
+    after = await coreLogTail();
+  } catch (e) {
+    return { result, errors: [], scanned: false, unavailable: e.message };
+  }
+
+  const { lines, overlapped } = newLines(before, after);
+  return { result, errors: parseConfigErrors(lines), scanned: true, overlapped };
+}
+
+/** How a scan that could not run is reported, so it is never mistaken for "clean". */
+function logScanNote(scan) {
+  if (scan.unavailable) return `unavailable — could not read the Core log: ${scan.unavailable}`;
+  if (scan.overlapped === false) {
+    return 'partial — the Core log moved on by more than the window read, so errors may be missing';
+  }
+  return null;
+}
+
 // config-check — validate the config HA would load. The safety step when
 // hand-editing YAML, and REST-only (there is no WebSocket equivalent), which is
 // why it used to mean hand-rolling a curl. Exits non-zero when invalid so a
 // caller can branch on it without parsing.
+//
+// The endpoint alone is not enough: it fails only on a config HA cannot load at
+// all, and answers "valid" for one it will load *without* the entity you just
+// wrote. So the Core log is read across the check and the errors it emits are
+// folded into the verdict. --no-log-scan restores the endpoint-only behaviour.
 async function configCheck() {
   if (args.some((a) => a === '-h' || a === '--help')) usage(USAGE['config-check']);
-  let result;
+  const withScan = !args.includes('--no-log-scan');
+
+  let scan;
   try {
-    result = await core('config/core/check_config', { method: 'POST', timeoutMs: 120000 });
+    scan = await scanningLog(withScan, () => core('config/core/check_config', { method: 'POST', timeoutMs: 120000 }));
   } catch (e) {
     die(`Error: ${e.message}`);
   }
-  printJSON(result);
-  if (result?.result !== 'valid') process.exit(1);
+
+  const out = { ...(scan.result || {}) };
+  if (scan.errors.length) {
+    out.result = 'invalid';           // the endpoint said valid; the log says otherwise
+    out.platform_errors = scan.errors;
+  }
+  const note = logScanNote(scan);
+  if (note) out.log_scan = note;
+
+  printJSON(out);
+  if (out.result !== 'valid' || scan.errors.length) process.exit(1);
 }
 
 // reload — pick up edited YAML without restarting HA.
+//
+// Reload is where a bad per-entity config actually bites, and reporting
+// `{"reloaded":"template"}` unconditionally says only that the service call went
+// through — which reads as the reload having worked. Same log scan as
+// config-check, plus --expect to assert the entity you just wrote exists
+// afterwards, which is the failure this whole thing is about.
 const RELOAD_ALL = 'all';
 async function reload() {
   if (args.some((a) => a === '-h' || a === '--help')) usage(USAGE.reload);
-  const domain = args.find((a) => !a.startsWith('-')) || 'automation';
+  const withScan = !args.includes('--no-log-scan');
+
+  const expect = [];
+  const positional = [];
+  let expectTimeout = 8000;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--expect') {
+      if (!args[i + 1]) die('Error: --expect needs an entity_id');
+      expect.push(args[++i]);
+    } else if (args[i] === '--expect-timeout') {
+      if (!args[i + 1]) die('Error: --expect-timeout needs a duration');
+      try { expectTimeout = parseDuration(args[++i], '--expect-timeout'); }
+      catch (e) { die(`Error: ${e.message}`); }
+    } else if (!args[i].startsWith('-')) {
+      positional.push(args[i]);
+    }
+  }
+  const domain = positional[0] || 'automation';
   const [callDomain, service] = domain === RELOAD_ALL
     ? ['homeassistant', 'reload_all']
     : [domain, 'reload'];
 
+  let scan;
   try {
-    await core(`services/${callDomain}/${service}`, { method: 'POST', body: {}, timeoutMs: 120000 });
+    scan = await scanningLog(withScan, () => core(
+      `services/${callDomain}/${service}`, { method: 'POST', body: {}, timeoutMs: 120000 }));
   } catch (e) {
     die(`Error: reloading ${domain} failed — ${e.message}`);
   }
-  printJSON({ reloaded: domain, service: `${callDomain}.${service}` });
+
+  const out = { reloaded: domain, service: `${callDomain}.${service}` };
+  if (scan.errors.length) out.platform_errors = scan.errors;
+  const note = logScanNote(scan);
+  if (note) out.log_scan = note;
+
+  let missing = [];
+  if (expect.length) {
+    missing = await missingEntities(expect, { timeoutMs: expectTimeout });
+    out.expected = Object.fromEntries(
+      expect.map((id) => [id, missing.includes(id) ? 'missing' : 'present']));
+  }
+
+  printJSON(out);
+  if (scan.errors.length || missing.length) process.exit(1);
+}
+
+/**
+ * Which of these entity_ids the state machine does not have. Polled rather than
+ * read once: a reload is not instantaneous, and "not there yet" and "dropped
+ * because its config was rejected" look identical for the first second or two.
+ */
+async function missingEntities(ids, { timeoutMs = 8000, intervalMs = 500 } = {}) {
+  let outstanding = [...ids];
+  const deadline = Date.now() + timeoutMs;
+  await run(async (ws) => {
+    for (;;) {
+      const states = await ws.send({ type: 'get_states' });
+      const have = new Set((states || []).map((s) => s.entity_id));
+      outstanding = outstanding.filter((id) => !have.has(id));
+      if (!outstanding.length || Date.now() >= deadline) return;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  });
+  return outstanding;
 }
 
 // trace-watch — block until the automation actually fires, then report the

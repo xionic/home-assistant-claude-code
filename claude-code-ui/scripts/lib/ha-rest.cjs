@@ -57,4 +57,48 @@ async function core(path, { method = 'GET', body, timeoutMs = 30000 } = {}) {
   }
 }
 
-module.exports = { core };
+/**
+ * Fetch a Supervisor endpoint that answers in plain text — the journald log
+ * endpoints. Same contract as core(): a non-2xx throws with the body attached.
+ *
+ * The trap this guards against has two forms. The first is returning an error
+ * body as if it were data, which is how the removal of /api/error_log went
+ * unnoticed. The second is subtler and is why the log is read at all: treating a
+ * *success* body as a complete verdict. `check_config` answers "valid" for a
+ * config it has just logged errors about — an endpoint's silence about errors is
+ * not evidence of their absence.
+ */
+async function supervisorText(path, { query = {}, timeoutMs = 30000 } = {}) {
+  const qs = new URLSearchParams(query).toString();
+  const url = `${BASE}/${path.replace(/^\/+/, '')}${qs ? `?${qs}` : ''}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token()}`, Accept: 'text/plain' },
+      signal: controller.signal,
+    });
+  } catch (e) {
+    throw new Error(
+      e.name === 'AbortError' ? `GET ${url} timed out after ${timeoutMs}ms` : `GET ${url}: ${e.message}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const text = await res.text();
+  if (!res.ok) {
+    const detail = text ? ` — ${text.slice(0, 200).replace(/\s+/g, ' ').trim()}` : '';
+    throw new Error(`GET ${url} returned HTTP ${res.status}${detail}`);
+  }
+  return text;
+}
+
+/** The tail of Home Assistant Core's log, as ha-logs reads it. */
+function coreLogTail(lines = 400) {
+  return supervisorText('core/logs', { query: { lines } });
+}
+
+module.exports = { core, supervisorText, coreLogTail };

@@ -23,6 +23,7 @@ browser  ←→  WebSocket  ←→  server/lib/  ←→  @anthropic-ai/claude-ag
   - `lib/ha-ws.cjs` — shared connect/auth/request client
   - `lib/ha-time.cjs` — one clock for all output (see "Time" below)
   - `lib/ha-rest.cjs` — the few Supervisor REST endpoints with no WebSocket equivalent
+  - `lib/ha-log-scan.cjs` — pure helpers for reading the errors HA logs about itself during an operation
   - `ha-logs.sh` — Supervisor journald log reader, reached as `ha-tools logs`
 
 ### Server layout
@@ -254,7 +255,7 @@ Patterns for interacting with HA at runtime:
 | **ha-tools history** / **stats** (`ha-history`, `ha-stats`) | History / long-term statistics over a date range (`--days`, `--from`, `--to`) — wraps `history/history_during_period` + `recorder/statistics_during_period` | `$SUPERVISOR_TOKEN` auto |
 | **ha-tools timeline** (`ha-timeline`) | Several entities' state changes merged onto one clock (`--between HH:MM-HH:MM`) — the core automation-debugging move | `$SUPERVISOR_TOKEN` auto |
 | **ha-tools automation** | `list` / `show` (config HA has loaded) / `yaml` (its block in `automations.yaml`, numbered) | `$SUPERVISOR_TOKEN` auto |
-| **ha-tools config-check** / **reload** | Validate config (exit 1 if invalid) then reload a domain — REST-only, previously hand-rolled curl | `$SUPERVISOR_TOKEN` auto |
+| **ha-tools config-check** / **reload** | Validate config then reload a domain — REST-only, previously hand-rolled curl. Both read the Core log across the call to catch per-entity errors HA only logs (`--no-log-scan` opts out); `reload --expect <entity_id>` asserts the entity materialised | `$SUPERVISOR_TOKEN` auto |
 | **ha-tools trace-watch** | Block until an automation actually fires, then report the trace (incl. condition-blocked runs) | `$SUPERVISOR_TOKEN` auto |
 | **ha-tools lovelace** (`ha-lovelace`) | Lovelace dashboards (list / get / save / create / delete) over WebSocket | `$SUPERVISOR_TOKEN` auto |
 | **ha-tools logs** (`ha-logs`) | Core / host / Supervisor / per-app logs via the Supervisor journald endpoints | `$SUPERVISOR_TOKEN` auto |
