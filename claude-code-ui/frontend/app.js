@@ -26,10 +26,12 @@
  *   find.js         find in chat
  *   scroll.js       scroll anchoring and the auto-hiding header
  *   promptnav.js    the ↑/↓ prompt arrows
+ *   viewport.js     sizing the frame to the part of the screen we can see
  */
 import { promptInput } from './js/dom.js';
 import { connect } from './js/connection.js';
 import { resizeTextarea, updateSendBtn } from './js/composer.js';
+import { watchViewport } from './js/viewport.js';
 
 // Modules with no exported entry point still have to be loaded: each one wires
 // up its own listeners as it evaluates.
@@ -42,6 +44,10 @@ import './js/settings.js';
 import './js/banners.js';
 import './js/scroll.js';
 import './js/promptnav.js';
+
+// Before anything renders: everything below is laid out inside the frame this
+// sizes, and getting it wrong puts the composer below the fold on a phone.
+watchViewport();
 
 // Restore any draft the user was typing before navigating away.
 const draft = localStorage.getItem('draft');

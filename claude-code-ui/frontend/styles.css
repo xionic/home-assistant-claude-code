@@ -41,6 +41,15 @@ html, body {
   overscroll-behavior: none;
 }
 
+/* Blocking the chain is only safe while we know the whole app is on screen —
+   viewport.js guarantees that by measuring. When it cannot (cross-origin
+   parent, no visual viewport), it says so here, and the escape route goes back:
+   being stranded with the composer below the fold is far worse than a swipe
+   nudging the page behind us. */
+html.viewport-unmeasured, html.viewport-unmeasured body {
+  overscroll-behavior: auto;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
@@ -53,13 +62,25 @@ body {
 #app {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  /* Dynamic viewport height where it's supported: on a mobile browser the URL
-     bar shrinking and growing changes the usable height, and 100% (resolved
-     against a taller initial containing block) leaves the composer sitting
-     below the fold. */
-  height: 100dvh;
-  max-height: 100dvh;
+  /* The height the app is allowed to occupy, in order of preference.
+
+     `100%` is wrong on a mobile browser: it resolves against an initial
+     containing block taller than what you can see, leaving the composer below
+     the fold. `100dvh` fixes that when the app is the whole page — but inside
+     the ingress iframe it is wrong again, because `dvh` is the *iframe's*
+     viewport, and Home Assistant sizes that iframe against the large viewport,
+     so it hangs off the bottom of the screen while the URL bar is showing.
+
+     So js/viewport.js measures the band that is genuinely on screen and
+     publishes it as --app-height / --app-top; dvh is the fallback for when it
+     can't. Positioned, so the overlays inside can size themselves to the same
+     box rather than to the iframe. See the comment at the top of that file. */
+  position: absolute;
+  top: var(--app-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
   max-width: 860px;
   margin: 0 auto;
   overflow: hidden;
@@ -244,7 +265,9 @@ body {
   border-radius: var(--radius-sm);
   box-shadow: 0 8px 24px rgba(0,0,0,.45);
   width: 320px; max-width: calc(100vw - 24px);
-  max-height: 70vh;
+  /* Against the visible band, not the iframe — it hangs 52px below #app's top,
+     so this is what's left of the screen below it. */
+  max-height: calc(var(--app-height, 100dvh) - 68px);
   display: flex; flex-direction: column;
   overflow: hidden;
 }
@@ -723,8 +746,12 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 }
 
 /* ── Permission overlay ── */
+/* Absolute, not fixed: these live inside #app, which is the box we know is on
+   screen. `position: fixed` would size them to the ingress iframe instead, and
+   under a mobile URL bar that puts a centred dialog's buttons below the fold —
+   the same failure #app itself was fixed for. */
 .permission-overlay {
-  position: fixed; inset: 0;
+  position: absolute; inset: 0;
   background: rgba(0,0,0,.72);
   display: flex; align-items: center; justify-content: center;
   z-index: 200; padding: 16px;
@@ -737,7 +764,7 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
   border-radius: var(--radius);
   padding: 20px;
   max-width: 460px; width: 100%;
-  max-height: 80vh; overflow-y: auto;
+  max-height: calc(var(--app-height, 100dvh) * 0.8); overflow-y: auto;
 }
 
 /* The spacing below belongs to .card-head, which wraps this. */
@@ -826,7 +853,7 @@ pre:hover > .copy-btn, .copy-btn:focus { opacity: 1; }
 }
 
 .dialog-card { max-width: 540px; }
-.dialog-body { margin: 4px 0 18px; max-height: 55vh; overflow-y: auto; }
+.dialog-body { margin: 4px 0 18px; max-height: calc(var(--app-height, 100dvh) * 0.5); overflow-y: auto; }
 /* One question per page — .hidden is what the paging toggles. */
 .dialog-q { display: flex; flex-direction: column; gap: 8px; }
 .dialog-q.hidden { display: none; }

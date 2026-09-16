@@ -185,3 +185,180 @@ describe('the layout on a phone', { skip: executablePath ? false : 'no Chrome fo
     assert.ok(boxes.form <= boxes.vh + 1, 'composer is not below the fold');
   });
 });
+
+/*
+ * The phone case that actually bit: not the app on its own, but the app inside
+ * the Home Assistant ingress iframe on a mobile *browser*. HA sizes that iframe
+ * against the large viewport, so while the URL bar is showing it hangs below
+ * the bottom of the screen — and `100dvh` inside an iframe is the iframe, not
+ * the screen, so the composer went with it. Nothing in the app could scroll it
+ * back (that is what `overscroll-behavior` is for), and dragging HA's own
+ * toolbar to reach it took our header off the top instead.
+ *
+ * The shell below is that geometry: a toolbar, an iframe sized to a viewport
+ * 100px taller than the screen. Served through request interception so it is
+ * same-origin with the app, exactly as real ingress is.
+ */
+describe('the layout inside the ingress iframe', { skip: executablePath ? false : 'no Chrome found (set CHROME_PATH)' }, () => {
+  const SCREEN_W = 390, SCREEN_H = 740;
+  const URL_BAR = 100;    // screen the URL bar is eating; HA's page ignores it
+  const HA_TOOLBAR = 56;
+  const SHELL_PATH = '/__test_ha_shell';
+
+  let h, browser, page, consoleErrors;
+
+  before(async () => {
+    h = await startServer({ scenario: { runs: [{ steps: [{ text: 'a\n'.repeat(200) }] }] } });
+    browser = await puppeteer.launch({ executablePath, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    page = await browser.newPage();
+    consoleErrors = [];
+    page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    page.on('pageerror', (e) => consoleErrors.push(String(e)));
+    await page.setViewport({ width: SCREEN_W, height: SCREEN_H, isMobile: true, hasTouch: true });
+
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      if (!new URL(req.url()).pathname.startsWith(SHELL_PATH)) return req.continue();
+      req.respond({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!DOCTYPE html><html><head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            html, body { margin: 0; }
+            body { height: ${SCREEN_H + URL_BAR}px; }
+            .toolbar { height: ${HA_TOOLBAR}px; background: #03a9f4; }
+            iframe { display: block; border: 0; width: 100%; height: ${SCREEN_H + URL_BAR - HA_TOOLBAR}px; }
+          </style></head><body>
+          <div class="toolbar" id="ha-toolbar"></div><iframe id="app-frame" src="/"></iframe>
+          </body></html>`,
+      });
+    });
+
+    await page.goto(h.baseUrl + SHELL_PATH, { waitUntil: 'networkidle0' });
+    // Wait for the app itself, not for the fix — a broken layout must fail in
+    // the assertions below, where the message says what is wrong, rather than
+    // timing out here.
+    await page.waitForFunction(
+      () => document.getElementById('app-frame')?.contentDocument?.getElementById('input-form'),
+      { timeout: 5000 });
+    await settle();
+  });
+
+  after(async () => {
+    if (browser) await browser.close();
+    if (h) await h.stop();
+  });
+
+  /* Measuring is async — a frame for the rAF, and viewport.js re-reads once more
+     at 250ms because a phone browser reports a stale height right after load. */
+  const settle = () => new Promise((r) => setTimeout(r, 400));
+
+  /** Where the app's header and composer sit on the *screen*, not in the iframe. */
+  async function onScreen() {
+    return page.evaluate(() => {
+      const frame = document.getElementById('app-frame');
+      const top = frame.getBoundingClientRect().top;
+      const doc = frame.contentDocument;
+      const box = (sel) => doc.querySelector(sel).getBoundingClientRect();
+      return {
+        headerTop: top + box('.header').top,
+        composerBottom: top + box('.input-form').bottom,
+        screen: window.innerHeight,
+      };
+    });
+  }
+
+  test('measures the visible band rather than trusting the iframe', async () => {
+    const measured = await page.evaluate(() => {
+      const root = document.getElementById('app-frame').contentDocument.documentElement;
+      return {
+        height: root.style.getPropertyValue('--app-height'),
+        unmeasured: root.classList.contains('viewport-unmeasured'),
+      };
+    });
+    assert.equal(measured.unmeasured, false, 'a same-origin parent is measurable');
+    // The band is the screen minus HA's toolbar — not the iframe's own height.
+    assert.equal(measured.height, `${SCREEN_H - HA_TOOLBAR}px`);
+  });
+
+  test('has the whole app on screen on load, composer included', async () => {
+    const { headerTop, composerBottom, screen } = await onScreen();
+    assert.ok(headerTop >= 0, `header is off the top (${headerTop})`);
+    assert.ok(composerBottom <= screen + 1,
+      `composer is below the fold (${composerBottom} > ${screen})`);
+  });
+
+  test('follows the page when HA scrolls under it, instead of going off the top', async () => {
+    await page.evaluate((y) => window.scrollTo(0, y), URL_BAR);
+    await new Promise((r) => setTimeout(r, 80));   // measured, but not yet put back
+
+    const { headerTop, composerBottom, screen } = await onScreen();
+    assert.ok(headerTop >= 0, `header is off the top after scrolling (${headerTop})`);
+    assert.ok(composerBottom <= screen + 1,
+      `composer is below the fold after scrolling (${composerBottom} > ${screen})`);
+  });
+
+  /*
+   * Fitting to the visible band works just as well when the page above has been
+   * scrolled away, which is the trap: HA's toolbar goes off the top, we re-fit
+   * into the space it left, and the app looks perfectly normal with the menu
+   * button gone and nothing in reach to scroll it back.
+   */
+  test("puts Home Assistant's own toolbar back after its page is scrolled away", async () => {
+    await page.evaluate((y) => window.scrollTo(0, y), URL_BAR);
+    await settle();
+
+    const after = await page.evaluate(() => ({
+      scrollY: window.scrollY,
+      toolbarBottom: document.getElementById('ha-toolbar').getBoundingClientRect().bottom,
+    }));
+    assert.equal(after.scrollY, 0, 'HA\'s page was left scrolled');
+    assert.ok(after.toolbarBottom > 0,
+      `HA's menu button is off the top (toolbar ends at ${after.toolbarBottom})`);
+
+    // …and the app still fits in what is left below the toolbar.
+    const { headerTop, composerBottom, screen } = await onScreen();
+    assert.ok(headerTop >= 0 && composerBottom <= screen + 1,
+      `app spans ${headerTop}..${composerBottom} on a ${screen}px screen`);
+  });
+
+  test('leaves an ancestor alone when it has scrolling of its own to do', async () => {
+    await page.evaluate(() => {
+      const filler = document.createElement('div');
+      filler.id = 'filler';
+      filler.style.height = '1200px';
+      document.body.appendChild(filler);
+    });
+    await page.evaluate((y) => window.scrollTo(0, y), URL_BAR);
+    await settle();
+    const scrollY = await page.evaluate(() => window.scrollY);
+    assert.equal(scrollY, URL_BAR, 'hijacked a page that had its own content to scroll');
+
+    await page.evaluate(() => {
+      document.getElementById('filler').remove();
+      window.scrollTo(0, 0);
+    });
+    await settle();
+  });
+
+  test('keeps a dialog inside the visible band too', async () => {
+    const fits = await page.evaluate(() => {
+      const frame = document.getElementById('app-frame');
+      const top = frame.getBoundingClientRect().top;
+      const doc = frame.contentDocument;
+      const overlay = doc.getElementById('permission-overlay');
+      overlay.classList.remove('hidden');
+      const box = overlay.getBoundingClientRect();
+      const r = { top: top + box.top, bottom: top + box.bottom, screen: window.innerHeight };
+      overlay.classList.add('hidden');
+      return r;
+    });
+    assert.ok(fits.top >= 0 && fits.bottom <= fits.screen + 1,
+      `overlay spans ${fits.top}..${fits.bottom} on a ${fits.screen}px screen`);
+  });
+
+  test('had a clean console throughout', () => {
+    assert.deepEqual(consoleErrors, []);
+  });
+});
