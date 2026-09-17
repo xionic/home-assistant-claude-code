@@ -375,6 +375,19 @@ curl "http://$IP:7681/diag/query?q=Tell%20me%20the%20car%20battery%20state" | jq
 
 **Important — persisted MCP state:** the Claude CLI persists MCP servers into `~/.claude.json` (`projects["/config"].mcpServers`), and the SDK auto-loads them on every run. An early MCP-enabled build wrote a `home-assistant` server there, which kept loading and causing "Invalid authentication token" errors long after we stopped configuring it. `sanitizeMcpState()` in `server/index.js` strips persisted `mcpServers` (global + per-project) at startup so the app never loads a stale MCP server. **Do not remove it** even though we no longer configure any MCP servers ourselves.
 
+**Important — the account's claude.ai connectors:** from Agent SDK **0.3.26x** the
+CLI also auto-fetches the *claude.ai account's* cloud connectors (Gmail, Drive,
+Calendar …) and connects them. They arrive over the network from the logged-in
+account, not from any file, so `sanitizeMcpState()` cannot see them — the live
+suite caught three loading straight after the 0.3.237 → 0.3.274 bump. Every run
+therefore passes `settings: MCP_FREE_SETTINGS` (`disableClaudeAiConnectors`,
+`server/lib/mcp.js`), which is any-source-true and highest priority as an inline
+`settings` object. This is a permission matter, not tidiness: **the SDK does not
+invoke `canUseTool` for MCP tools**, so a connector's tools would run with no
+prompt in any mode — outside the permission mode the user picked, and reaching
+their mailbox rather than their house. `/diag/query` passes the same settings, or
+it would report connectors a real turn does not have.
+
 ### Other apps' configs (`/addon_configs`)
 
 The `all_app_configs` map in `config.yaml` mounts every other app's config folder at `/addon_configs/<repo>_<slug>/`. HA folder maps are **static** (always mounted; can't be toggled per-option), so access is gated in the app instead: the `allow_addon_configs` option (default **false**) → `ALLOW_ADDON_CONFIGS` env → a **PreToolUse hook** (`ADDON_CONFIGS_HOOKS` in `server/index.js`) that returns `permissionDecision: 'deny'` for any tool call whose serialized input contains `/addon_configs`. A PreToolUse hook is used rather than `canUseTool` because it runs in **every** permission mode — including `auto`, which has no `canUseTool` — and its deny short-circuits the tool before it runs. The hook is only attached when access is disabled (no per-call overhead when enabled). When enabled, `ha-context.sh` appends a section telling Claude the folder exists and how it's laid out; when disabled it's not advertised at all.
@@ -394,6 +407,34 @@ Selectable in the UI per-prompt; the **default for new chats** comes from the `d
 - **Auto** — a model classifier approves/denies each tool, no prompts (`permissionMode: 'auto'`, no `canUseTool`)
 
 **Reasoning effort:** the Settings panel has an effort selector (Low→Max) sent as `effort` on the prompt; the server sets `opts.effort` only when a level is chosen (else the SDK model default, high). Higher effort means longer, quieter thinking — a common cause of the "chat looks stuck" perception.
+
+## The model picker
+
+**The `<option>` list in `index.html` is a fallback, not the source of truth. Do
+not "fix" a stale model list by editing it.** After `system/init`, `run-query.js`
+asks the live query for `supportedModels()` — the catalog Claude Code's own
+`/model` picker is built from, already filtered to what the logged-in account may
+run — caches it on `runtime.cachedModels`, and broadcasts `models`. The client
+rebuilds the dropdown from that. It is cached and replayed in the greeting
+exactly like `cachedSlashCommands`, so a tab connecting later gets it without
+waiting for a turn; the static options only ever show before the first run of a
+boot.
+
+The call is fire-and-forget and wrapped in try/catch: a CLI that doesn't
+implement it leaves the static list in place rather than emptying the dropdown.
+
+Two things about the live catalog that the shapes have to tolerate, both seen on
+a real account:
+
+- **Its `value`s are mostly aliases, not ids** — `sonnet`, `haiku`, `opus[1m]`,
+  `default` — while this app has always stored full ids. Every row also carries
+  `resolvedModel` (`sonnet` → `claude-sonnet-5`), which is what matches a stored
+  id to its row; without it a stored `claude-sonnet-5` would look absent and be
+  appended as a duplicate. A stored id that matches nothing is *kept* and shown
+  by name (`ensureModelOption`), never silently swapped for another model.
+- **A row's `value` can differ between runs** — the Fable row arrived as
+  `claude-fable-5-1` on one turn and `claude-fable-5-1[1m]` on the next. The
+  catalog is forwarded verbatim; both spellings run.
 
 ## Auto-Continue on Usage Limit
 

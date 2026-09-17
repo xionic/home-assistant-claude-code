@@ -18,6 +18,7 @@ import {
 import { runtime } from './state.js';
 import { broadcast } from './broadcast.js';
 import { runCmd } from './exec.js';
+import { MCP_FREE_SETTINGS } from './mcp.js';
 import { isSubscriptionAuth } from './auth.js';
 import { parseSession, listSessions, sessionTitle, saveActive } from './sessions.js';
 import { ADDON_CONFIGS_HOOKS } from './permissions.js';
@@ -88,6 +89,10 @@ export function registerDiagRoutes(app) {
       cwd: WORK_DIR,
       abortController,
       plugins: PLUGINS,
+      // The point of this endpoint is to emulate a user prompt, so it has to
+      // carry the same MCP-free settings a real run does — otherwise it reports
+      // connectors loading that a real turn would not have (and vice versa).
+      settings: MCP_FREE_SETTINGS,
       // Auto-approve every tool (bypassPermissions is refused when running as root).
       canUseTool: (_t, input) => Promise.resolve({ behavior: 'allow', updatedInput: input }),
       toolConfig: { askUserQuestion: { previewFormat: 'html' } },

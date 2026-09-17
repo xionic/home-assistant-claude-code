@@ -24,6 +24,13 @@
 #   4. tar merges, it does not mirror. Files deleted locally since the last
 #      deploy stay on the box; --prune reports them so they can be removed.
 #   5. A rebuild restarts the app, so any in-progress chat drops.
+#   6. `rebuild` only works when the *installed* version matches the version in
+#      the app directory's config.yaml. When they differ — after a version bump,
+#      or on a box that is simply behind — the Supervisor refuses with "Local and
+#      store versions of app ... differ, use Update instead of Rebuild", and
+#      `update` is the route instead. That needs a `ha store reload` first: until
+#      the store is reloaded the Supervisor still offers the version it cached
+#      before the copy, and `update` is a no-op against it.
 #
 set -euo pipefail
 
@@ -116,8 +123,21 @@ if [ "$REBUILD" = false ]; then
     exit 0
 fi
 
-step "Rebuilding $SLUG (this restarts the app; any in-progress chat drops)"
-sh_ha "bash -lc 'ha apps rebuild $SLUG'"
+# Trap 6: rebuild or update, depending on whether the box is already on this
+# version. Asking for the wrong one fails outright rather than falling back.
+installed=$(sh_ha "bash -lc 'ha apps info $SLUG --raw-json'" \
+    | python3 -c "import sys, json; print(json.load(sys.stdin)['data']['version'])")
+local_version=$(sed -nE 's/^version: *"?([^"]+)"?.*/\1/p' "$SRC/config.yaml" | head -1)
+
+if [ "$installed" = "$local_version" ]; then
+    step "Rebuilding $SLUG at $installed (this restarts the app; any in-progress chat drops)"
+    sh_ha "bash -lc 'ha apps rebuild $SLUG'"
+else
+    step "Updating $SLUG $installed → $local_version (this restarts the app; any in-progress chat drops)"
+    # Without this the Supervisor still offers the version it cached before the copy.
+    sh_ha "bash -lc 'ha store reload'"
+    sh_ha "bash -lc 'ha apps update $SLUG'"
+fi
 
 step "State"
 sh_ha "bash -lc 'ha apps info $SLUG --raw-json'" | python3 -c "

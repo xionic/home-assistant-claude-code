@@ -172,4 +172,22 @@ describe('persisted MCP servers', () => {
       await restarted.stop();
     }
   });
+
+  // The account's claude.ai connectors arrive over the network rather than from
+  // a file, so stripping .claude.json cannot stop them. They would also bypass
+  // every permission prompt, because the SDK does not call canUseTool for MCP
+  // tools — see MCP_FREE_SETTINGS in server/lib/mcp.js.
+  test('and every run asks the CLI not to fetch the account\'s claude.ai connectors', async () => {
+    const h = await startServer({ scenario: { runs: [{ steps: [{ text: 'ok' }] }] } });
+    try {
+      const c = await h.connect();
+      await c.waitFor('history');
+      c.send({ type: 'prompt', text: 'hello', permissionMode: 'bypass' });
+
+      const q = await h.waitForRecord((r) => r.kind === 'query');
+      assert.equal(q.options.settings?.disableClaudeAiConnectors, true);
+    } finally {
+      await h.stop();
+    }
+  });
 });

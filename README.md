@@ -28,7 +28,7 @@ dashboard — it can read your config and entity states, and supports auto or ma
 - 🧠 **HA-aware context** — auto-loads your HA version, entities, apps, and recent errors into Claude's context each session
 - 🔌 **ESPHome support** *(optional)* — turn on `enable_esphome` and Claude can validate, compile, OTA-flash, and stream logs for your ESPHome devices. It uses **its own bundled ESPHome toolchain** (installed inside this app), not the ESPHome app's, while working on the same device configs in `/config/esphome`
 - 🔧 **Live HA tools** — `ha-ws-client` (states, service calls, templates, registry), `ha-history` / `ha-stats` (date-range history & statistics), and `ha-lovelace` (create / list / get / save / delete dashboards), all authenticated automatically with `$SUPERVISOR_TOKEN` — **no token setup required**
-- 🤖 **Model & effort** — switch between Opus / Sonnet / Haiku and trade speed for depth (Low → Max)
+- 🤖 **Model & effort** — switch between Fable / Opus / Sonnet / Haiku and trade speed for depth (Low → Max). The list comes from Claude Code itself, so it shows the models your account can actually run
 - ⏳ **Live feedback** — a working indicator with elapsed seconds, a stop button, message timestamps, and a real context-usage meter showing progress toward auto-compaction
 - ♻️ **Auto-continue on usage limit** *(optional)* — if a subscription 5-hour limit interrupts a response, resume automatically when it resets. Survives an app/HA restart
 - 🔎 **Find in chat** — header search, `/find`, or Ctrl/Cmd+F, with match count and highlighting

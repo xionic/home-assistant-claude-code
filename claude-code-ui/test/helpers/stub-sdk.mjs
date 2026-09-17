@@ -24,6 +24,9 @@
  *   { "sleep": 250 }
  *   { "throw": "message" }               generator throws (post-result throws included)
  *
+ * Per-run `models` (array) overrides the default supportedModels() catalog;
+ * `modelsThrow` (string) makes that call reject instead, as an older CLI would.
+ *
  * `{{SESSION_ID}}` anywhere in an emitted event is replaced with the run's
  * session id, so a scripted `result`/`init` matches what the server resumed.
  *
@@ -38,6 +41,15 @@ const SCENARIO_FILE = process.env.STUB_SDK_SCENARIO || '';
 const RECORD_FILE = process.env.STUB_SDK_RECORD || '';
 
 let scenario = { runs: [] };
+
+// The catalog a real CLI of this era reports back from query.supportedModels() —
+// mirrors the rows the /model picker offers, filtered to what an account can run.
+const DEFAULT_MODELS = [
+  { value: 'claude-fable-5-1', displayName: 'Fable 5.1', description: 'Fable 5.1 - most capable for your hardest and longest-running tasks' },
+  { value: 'claude-opus-5', displayName: 'Opus 5', description: 'Opus 5 - best for everyday, complex tasks' },
+  { value: 'claude-sonnet-5', displayName: 'Sonnet 5', description: 'Sonnet 5 - efficient for routine tasks. Generally recommended for most coding tasks' },
+  { value: 'claude-haiku-4-5', displayName: 'Haiku 4.5', description: 'Haiku 4.5 - fastest for quick answers. Lower cost but less capable than Sonnet 4.6.' },
+];
 if (SCENARIO_FILE) {
   try { scenario = JSON.parse(readFileSync(SCENARIO_FILE, 'utf8')); }
   catch (e) { console.error(`[stub-sdk] could not read scenario: ${e.message}`); }
@@ -64,6 +76,7 @@ function describeOptions(options = {}) {
     supportedDialogKinds: options.supportedDialogKinds ?? null,
     toolConfig: options.toolConfig ?? null,
     plugins: (options.plugins || []).map((p) => p.path),
+    settings: options.settings ?? null,
   };
 }
 
@@ -192,6 +205,10 @@ export function query({ prompt, options = {} }) {
     return: (...a) => iterator.return(...a),
     throw: (...a) => iterator.throw(...a),
     getContextUsage: async () => contextUsage,
+    supportedModels: async () => {
+      if (run.modelsThrow) throw new Error(run.modelsThrow);
+      return run.models || DEFAULT_MODELS;
+    },
   };
 }
 

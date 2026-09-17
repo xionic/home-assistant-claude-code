@@ -23,6 +23,12 @@ export const runtime = {
    *  connected client can populate its autocomplete immediately. */
   cachedSlashCommands: [],
 
+  /** The SDK's own model catalog (query.supportedModels()), account-filtered —
+   *  the same list Claude Code's /model picker uses. Cached so a newly
+   *  connected client can rebuild its dropdown immediately; the static options
+   *  in index.html are only the fallback shown before the first turn. */
+  cachedModels: [],
+
   /** Set when a query fails for an auth reason. The credentials file still
    *  exists in that case, so isAuthenticated() alone would keep hiding the login
    *  screen; this is what lets the UI show a re-auth prompt instead. */

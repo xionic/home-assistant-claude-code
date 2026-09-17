@@ -35,6 +35,7 @@ function greet(ws) {
   const url = loginUrl();
   if (url) send(ws, { type: 'auth_url', url });
   send(ws, { type: 'slash_commands', commands: runtime.cachedSlashCommands });
+  send(ws, { type: 'models', models: runtime.cachedModels });
   send(ws, { type: 'ha_links', entities: runtime.haLinks.entities, automations: runtime.haLinks.automations });
   send(ws, { type: 'sessions', sessions: listSessions(), activeId: runtime.activeSessionId });
   send(ws, { type: 'history', items: parseSession(runtime.activeSessionId), running: !!runtime.activeQuery });

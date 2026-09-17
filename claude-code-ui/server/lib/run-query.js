@@ -18,6 +18,7 @@ import { listSessions, saveActive, isQuestionAnswer, truncateOutput } from './se
 import { hooksFor, makeCanUseTool } from './permissions.js';
 import { askQuestion } from './dialogs.js';
 import { refreshHaLinks } from './ha-links.js';
+import { MCP_FREE_SETTINGS } from './mcp.js';
 import { usableSlashCommands } from './slash-commands.js';
 import * as autoContinue from './auto-continue.js';
 
@@ -55,7 +56,7 @@ export async function runQuery(ws, state, { text, permissionMode, model, effort,
   // and the SDK persists it to the session store, so nothing is recorded here).
   for (const c of connections) if (c !== ws) send(c, { type: 'user', text });
 
-  const opts = { cwd: WORK_DIR, abortController, plugins: PLUGINS };
+  const opts = { cwd: WORK_DIR, abortController, plugins: PLUGINS, settings: MCP_FREE_SETTINGS };
   if (model) opts.model = model;
   // Only override effort when the UI asked for a level; otherwise the SDK's own
   // model default applies.
@@ -116,6 +117,22 @@ export async function runQuery(ws, state, { text, permissionMode, model, effort,
     } catch (e) { vlog(`getContextUsage failed: ${e?.message || e}`); }
   };
 
+  // The SDK's own model catalog — account-filtered, the same list Claude Code's
+  // /model picker is built from. Fire-and-forget: never awaited in the event
+  // loop, so a slow or unimplemented control request cannot delay the stream,
+  // and the catch means an older CLI simply leaves the static list in place.
+  const reportModelCatalog = async (q) => {
+    try {
+      const rows = await q.supportedModels();
+      const models = (rows || []).map(({ value, resolvedModel, displayName, description }) =>
+        ({ value, resolvedModel, displayName, description }));
+      if (!models.length) return;
+      runtime.cachedModels = models;
+      broadcast({ type: 'models', models });
+      vlog(`models: ${models.length} offered`);
+    } catch (e) { vlog(`supportedModels failed: ${e?.message || e}`); }
+  };
+
   log('INFO', `query start: mode=${runtime.activePermMode} effort=${opts.effort || 'default'} ` +
     `model=${model || 'default'} resume=${resuming} promptLen=${text.length}`);
 
@@ -155,6 +172,7 @@ export async function runQuery(ws, state, { text, permissionMode, model, effort,
           vlog(`slash commands: ${commands.length} offered${hidden ? `, ${hidden} terminal-only hidden` : ''}`);
         }
         vlog(`init: session=${event.session_id} model=${event.model}`);
+        void reportModelCatalog(q);
 
       } else if (event.type === 'system' && event.subtype === 'compact_boundary') {
         const m = event.compact_metadata || {};

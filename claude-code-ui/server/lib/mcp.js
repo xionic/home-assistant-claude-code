@@ -10,10 +10,29 @@
  * so any persisted definition is stripped at startup. **Do not delete this**
  * even though we no longer configure MCP servers ourselves — the point is the
  * ones we did not configure.
+ *
+ * .claude.json is not the only way one arrives, though — see MCP_FREE_SETTINGS.
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { HOME_DIR } from './config.js';
+
+/**
+ * Settings passed to every run to keep the session MCP-free.
+ *
+ * From Agent SDK 0.3.26x the CLI auto-fetches the *account's* claude.ai cloud
+ * connectors (Gmail, Drive, Calendar …) and connects them — they come from the
+ * logged-in claude.ai account, not from any file on disk, so sanitizeMcpState()
+ * cannot see them and the live suite caught three loading after the bump.
+ *
+ * That matters here beyond noise: the SDK does not invoke `canUseTool` for MCP
+ * tools, so a connector's tools would run without ever raising a permission
+ * prompt — silently outside the permission mode the user picked, and reaching
+ * their mailbox rather than their house. `disableClaudeAiConnectors` is
+ * any-source-true, and an inline `settings` object is the highest-priority
+ * user-controlled source, so this holds regardless of what is on disk.
+ */
+export const MCP_FREE_SETTINGS = { disableClaudeAiConnectors: true };
 
 export function sanitizeMcpState() {
   const file = path.join(HOME_DIR, '.claude.json');

@@ -9,7 +9,7 @@ import { setStatus, updateSendBtn } from './composer.js';
 import { closePermission, dropDialog, pendingPerm, showPermissionPrompt, showUserDialog } from './dialogs.js';
 import { autoContinueToggle, loginBtn, loginCodeForm, loginCodeInput, loginDesc, loginScreen, loginTitle, loginUrlEl, loginUrlSect, loginWaiting, modelSelect, permModeSelect, sessionsPanel, wsUrl } from './dom.js';
 import { relinkRenderedBubbles } from './links.js';
-import { ensureModelOption, updateCtxHint } from './model.js';
+import { applyModelCatalog, ensureModelOption, updateCtxHint } from './model.js';
 import { renderSessions } from './sessions.js';
 import { setAutoContinueSupported } from './settings.js';
 import { hideThinking, showThinking } from './thinking.js';
@@ -100,6 +100,13 @@ export function handleServerMessage(msg) {
 
     case 'slash_commands':
       S.pluginCommands = Array.isArray(msg.commands) ? msg.commands : [];
+      break;
+
+    case 'models':
+      // The SDK's own model catalog — account-filtered, same list the CLI's
+      // /model picker uses. Rebuilds the dropdown; the static options in
+      // index.html are only the fallback shown before the first turn.
+      applyModelCatalog(msg.models);
       break;
 
     case 'ha_links': {

@@ -94,6 +94,17 @@ describe('the rest of the UI', { skip: executablePath ? false : 'no Chrome found
     await page.click('#settings-btn');
   });
 
+  test('the model dropdown is rebuilt from the SDK catalog, keeping your stored pick', async () => {
+    // A run has already happened (the 'renders markdown' test), so the
+    // 'models' broadcast should have rebuilt the dropdown from the stub's
+    // catalog by now.
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('#model-select option')].some((o) => o.value === 'claude-fable-5-1'),
+      { timeout: 5000 });
+    const selected = await page.$eval('#model-select', (el) => el.value);
+    assert.equal(selected, 'claude-sonnet-5', 'the earlier stored pick survives the catalog rebuild');
+  });
+
   test('slash-command autocomplete offers the app commands', async () => {
     await page.type('#prompt-input', '/us');
     await page.waitForSelector('#cmd-menu:not(.hidden)', { timeout: 5000 });
