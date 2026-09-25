@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.274",
+    "@anthropic-ai/claude-agent-sdk": "0.3.282",
     "express": "^4.21.0",
     "ws": "^8.18.0"
   }

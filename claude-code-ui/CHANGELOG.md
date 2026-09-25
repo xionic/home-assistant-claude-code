@@ -1,3 +1,7 @@
+## 1.13.0
+- **Claude Opus 5.5 is here** — Anthropic's new default Opus, with a 1M-token context window. It takes Opus 5's place in the menu; if you'd already picked Opus 5 it keeps working and still shows by name
+- **Updated to the current Claude Code engine** (Agent SDK 0.3.282, from 0.3.274)
+
 ## 1.12.0
 - **Claude Fable 5.1 is now in the model picker** — Anthropic's most capable model, for the hardest and longest-running jobs. It sits above Opus, and costs accordingly, so it's there when you want it rather than as the default
 - **The model list now follows Claude Code instead of going stale.** It used to be a list written into this app by hand, which meant every new Anthropic model needed an app update before you could pick it — and it would happily offer you models your account can't actually run. The app now asks Claude Code which models *your* account may use and builds the menu from that, with the same names and descriptions you'd see in the terminal. A model you'd already picked is kept, by name, even if it's no longer on the list
