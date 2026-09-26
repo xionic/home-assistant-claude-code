@@ -23,6 +23,19 @@ export const HOME_DIR = process.env.HOME || '/data/home';
 /** Supervisor base URL — the same override scripts/lib/ha-rest.cjs uses. */
 export const SUPERVISOR_URL = process.env.HA_SUPERVISOR_URL || 'http://supervisor';
 
+/**
+ * Home Assistant Core, reached *directly* rather than through the Supervisor.
+ *
+ * This is deliberate and load-bearing for /diag's auth (see lib/ha-auth.js):
+ * `http://supervisor/core/api/` accepts the app's own SUPERVISOR_TOKEN, so it
+ * cannot tell a user's API key from this add-on's credentials. Core rejects that
+ * token and accepts only real Core tokens, which is exactly the test we want.
+ * Overridable so tests can point at a fake instead of a live instance.
+ */
+export const HA_CORE_URL = process.env.HA_CORE_URL || 'http://homeassistant:8123';
+export const HA_CORE_WS_URL = process.env.HA_CORE_WS_URL ||
+  `${HA_CORE_URL.replace(/^http/, 'ws')}/api/websocket`;
+
 // Optional ESPHome capability. When enabled we load an extra local plugin (the
 // esphome skill) and exempt the ESPHome app's config folder from the
 // addon-configs guard so the esphome CLI can work on it.

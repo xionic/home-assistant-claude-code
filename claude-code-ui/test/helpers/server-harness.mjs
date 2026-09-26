@@ -108,8 +108,15 @@ export class Harness {
     return client;
   }
 
-  async get(pathname) {
-    const res = await fetch(this.baseUrl + pathname);
+  /**
+   * `token` becomes an Authorization: Bearer header — what /diag now requires.
+   * `rawAuth` sets that header verbatim instead, for testing malformed ones.
+   */
+  async get(pathname, { token, rawAuth } = {}) {
+    let headers;
+    if (rawAuth !== undefined) headers = { authorization: rawAuth };
+    else if (token) headers = { authorization: `Bearer ${token}` };
+    const res = await fetch(this.baseUrl + pathname, { headers });
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch {}

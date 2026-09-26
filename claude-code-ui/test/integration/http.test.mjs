@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, writeFileSync, utimesSync } from 'node:fs';
 import path from 'node:path';
 import { startServer, userLine } from '../helpers/server-harness.mjs';
+import { startFakeCore } from '../helpers/fake-core.mjs';
 
 describe('with debug off', () => {
   let h;
@@ -34,19 +35,26 @@ describe('with debug off', () => {
   });
 });
 
+// Every /diag route needs an admin's Home Assistant token now, so these cases
+// carry one. The guard itself — who is refused, and with which status — is
+// diag-auth.test.mjs; here the token is just the price of entry.
 describe('with debug on', () => {
-  let h;
+  let h, core;
+  const ADMIN = 'admin-token';
+  const as = { token: ADMIN };
+
   before(async () => {
+    core = await startFakeCore({ tokens: { [ADMIN]: { isAdmin: true, name: 'Nick' } } });
     h = await startServer({
-      env: { DEBUG_MODE: 'true' },
+      env: { DEBUG_MODE: 'true', HA_CORE_WS_URL: core.wsUrl },
       sessions: { 'sess': [userLine('a question')] },
       data: { 'active-session.json': { sessionId: 'sess' } },
     });
   });
-  after(async () => { await h.stop(); });
+  after(async () => { await h.stop(); await core.stop(); });
 
   test('/diag reports the environment and runs its probes', async () => {
-    const res = await h.get('/diag');
+    const res = await h.get('/diag', as);
     assert.equal(res.status, 200);
     assert.equal(res.json.env.has_SUPERVISOR_TOKEN, false, 'no token in the test environment');
     assert.ok('ws_ping' in res.json.tests);
@@ -54,27 +62,27 @@ describe('with debug on', () => {
   });
 
   test('/diag/conv shows the active session and its transcript', async () => {
-    const res = await h.get('/diag/conv');
+    const res = await h.get('/diag/conv', as);
     assert.equal(res.json.activeSessionId, 'sess');
     assert.equal(res.json.count, 1);
     assert.equal(res.json.sessionCount, 1);
   });
 
   test('/diag/sesslist lists the store, and ?id= dumps one transcript', async () => {
-    const list = await h.get('/diag/sesslist');
+    const list = await h.get('/diag/sesslist', as);
     assert.deepEqual(list.json.sessions.map((s) => s.id), ['sess']);
-    const one = await h.get('/diag/sesslist?id=sess');
+    const one = await h.get('/diag/sesslist?id=sess', as);
     assert.equal(one.json.items[0].text, 'a question');
   });
 
   test('/diag/grep searches across every stored session', async () => {
-    const res = await h.get('/diag/grep?q=question');
+    const res = await h.get('/diag/grep?q=question', as);
     assert.equal(res.json.sessionsWithHits, 1);
     assert.match(res.json.results[0].snippets[0].text, /a question/);
   });
 
   test('/diag/config reports which Claude config files exist', async () => {
-    const res = await h.get('/diag/config');
+    const res = await h.get('/diag/config', as);
     assert.equal(res.json.WORK_DIR, h.workDir);
     assert.ok(Object.keys(res.json.files).length > 0);
   });
@@ -82,7 +90,7 @@ describe('with debug on', () => {
   test('/diag/autocontinue can arm a resume without waiting for a real limit', async () => {
     const c = await h.connect();
     await c.waitFor('history');
-    const res = await h.get('/diag/autocontinue?simulate=1');
+    const res = await h.get('/diag/autocontinue?simulate=1', as);
     assert.equal(res.json.enabled, true);
     assert.equal(res.json.timerArmed, true);
     const pending = await c.waitFor('auto_continue_pending');

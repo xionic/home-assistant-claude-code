@@ -45,6 +45,7 @@ loads the persisted state, and listens. Everything with behaviour lives in
 | `run-query.js` | one turn: SDK options in, wire events out |
 | `ws-protocol.js` | the greeting, and a dispatch table of client messages |
 | `diag.js` | the `/diag` routes (registered only when `debug` is on) |
+| `ha-auth.js` | the HA admin-token guard those routes sit behind |
 | `uploads.js`, `ha-links.js`, `mcp.js`, `exec.js`, `log.js` | attachments, entity link targets, MCP hygiene, shelling out, logging |
 
 Rules that keep it readable: **no top-level side effects** beyond pure
@@ -124,7 +125,10 @@ fails after a change, the question is whether the behaviour was meant to change
 — not whether to update the assertion.
 
 The live suite needs the **`debug` app option on**; without it the `/diag`
-routes are not registered and every probe returns the SPA. It reaches the
+routes are not registered and every probe returns the SPA. It also needs an **HA
+admin token** for the `/diag` checks (`HA_API_TOKEN`, or `HOME_ASSISTANT_TOKEN_NICK`
+as privd delivers it — `prsecret Home-assistant-token-nick -- npm run test:live`);
+without one those checks are *skipped*, not failed. It reaches the
 container through SSH (the app's IP is on Docker's internal network) — override
 with `HA_SSH_HOST` / `HA_SSH_PORT` / `HA_SSH_USER` / `HA_SSH_KEY`, or pass
 `--local` when running inside the container.
@@ -358,6 +362,35 @@ timestamp-first; an app's log is raw container stdout with no guaranteed shape.
 
 All diagnostic routes are **only registered when the `debug` app option is `true`** (default `false`); otherwise they're absent and requests fall through to the SPA. Enable via the app **Configuration** tab, or the Supervisor API (`POST /addons/local_claude-code-ui/options` with the full options object incl. `"debug": true`, then restart). The Supervisor token is available as `$SUPERVISOR_TOKEN` inside the SSH & Web Terminal app.
 
+#### They need a Home Assistant admin token (`server/lib/ha-auth.js`)
+
+Every `/diag` route requires `Authorization: Bearer <token>`, where the token is a
+Home Assistant **long-lived access token** belonging to an **admin** user. Missing
+or rejected → 401, valid but not an admin → 403, Home Assistant unreachable → 503:
+it **fails closed**, because an unvalidatable token must never be treated as valid.
+
+These endpoints were unauthenticated until 1.14.0, which mattered more than
+"diagnostics" suggests: `/diag/query` and `/diag/feed` run a real turn with every
+tool auto-approved (code execution, `/config` write access), `/diag/conv?clear=1`
+clears the conversation, and `/diag/grep` / `/diag/sesslist` hand back transcripts.
+Nothing on the LAN could reach them — the port is unpublished and the container
+sits on the `hassio` bridge alone — but every other app, Core and the Supervisor
+could. The guard is mounted on the group (`app.use('/diag', requireHaAdmin)`), so a
+route added later is covered without anyone remembering to.
+
+**Validated against Core directly (`homeassistant:8123`), never the Supervisor
+proxy.** Measured: `http://supervisor/core/api/` answers **200** to this app's own
+`SUPERVISOR_TOKEN`, so validating there would accept the add-on's own credentials —
+and every other app's — as a user key; Core answers **401** to that token and 200
+only to real Core tokens. One WebSocket round-trip does both jobs: the `auth`
+handshake proves the token is genuine, then `auth/current_user` reports `is_admin`
+(there is no REST endpoint for the second part). Verdicts are cached ~5 min keyed on
+a SHA-256 of the token, never the token itself; `unreachable` is never cached.
+
+The live suite reads the token from `HA_API_TOKEN` or `HOME_ASSISTANT_TOKEN_NICK`
+(what privd delivers), and **skips** the /diag checks when neither is set:
+`prsecret Home-assistant-token-nick -- npm run test:live`.
+
 Endpoints:
 - `GET /diag` — env + auth probes (ha-ws-client, REST, ha-lovelace) and the persisted-MCP extract from `~/.claude.json`.
 - `GET /diag/config` — dumps the Claude config files the SDK may load settings/MCP from.
@@ -367,8 +400,10 @@ Endpoints:
 
 ```bash
 IP=$(ha apps info local_claude-code-ui --raw-json | jq -r .data.ip_address)
-curl http://$IP:7681/diag | jq .
-curl "http://$IP:7681/diag/query?q=Tell%20me%20the%20car%20battery%20state" | jq '.events'
+# HA_TOKEN: Profile → Security → Long-lived access tokens, on an admin account.
+curl -H "Authorization: Bearer $HA_TOKEN" http://$IP:7681/diag | jq .
+curl -H "Authorization: Bearer $HA_TOKEN" \
+  "http://$IP:7681/diag/query?q=Tell%20me%20the%20car%20battery%20state" | jq '.events'
 ```
 
 **ha-mcp has been removed entirely** — it was unreliable (broken WebSocket auth; mis-reports dashboards; the SDK doesn't invoke `canUseTool` for MCP tools so they bypass prompts). Use ha-ws-client + ha-history/ha-stats + ha-lovelace + direct YAML edits, which run as Bash/Edit calls and honour the permission mode. The `enable_ha_mcp` / `ha_token` app options are gone.

@@ -31,7 +31,8 @@ configuration:
       Write detailed per-event logs to the app log for diagnosing a chat that
       seems to hang. Milestone logs are always recorded.
   debug:
-    name: Debug mode (dangerous)
+    name: Debug mode
     description: >-
-      DANGEROUS — exposes unauthenticated /diag endpoints (including one that runs
-      arbitrary prompts with tools auto-approved). Local debugging only.
+      Exposes /diag endpoints for troubleshooting, including one that runs arbitrary
+      prompts with tools auto-approved. They require a Home Assistant long-lived
+      access token belonging to an admin user. Leave off unless you are debugging.

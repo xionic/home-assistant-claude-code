@@ -1,13 +1,19 @@
 /*
- * Diagnostics — read-only probes of what actually authenticates and what the SDK
- * actually loads, runnable from the Supervisor network:
+ * Diagnostics — probes of what actually authenticates and what the SDK actually
+ * loads, runnable from the Supervisor network:
  *
  *   IP=$(ha apps info local_claude-code-ui --raw-json | jq -r .data.ip_address)
- *   curl http://$IP:7681/diag | jq .
+ *   curl -H "Authorization: Bearer $HA_TOKEN" http://$IP:7681/diag | jq .
  *
  * Registered ONLY when the `debug` app option is on. When it is off these routes
  * do not exist at all and requests fall through to the SPA, which is why the
  * live smoke test checks for JSON rather than a status code.
+ *
+ * **Every route here needs a Home Assistant admin's long-lived access token** —
+ * see the requireHaAdmin guard below and lib/ha-auth.js. Not all of these are
+ * read-only (/diag/query and /diag/feed run a real turn with tools auto-approved,
+ * /diag/conv?clear=1 clears the conversation) and the read-only ones hand back
+ * transcripts and config, so the guard covers the group rather than a chosen few.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
@@ -23,9 +29,14 @@ import { isSubscriptionAuth } from './auth.js';
 import { parseSession, listSessions, sessionTitle, saveActive } from './sessions.js';
 import { ADDON_CONFIGS_HOOKS } from './permissions.js';
 import { runQuery, abortActive } from './run-query.js';
+import { requireHaAdmin } from './ha-auth.js';
 import * as autoContinue from './auto-continue.js';
 
 export function registerDiagRoutes(app) {
+  // One guard for the whole group: Express applies this to /diag and everything
+  // beneath it, so a route added later is covered without anyone remembering to.
+  app.use('/diag', requireHaAdmin);
+
   // Env + auth/connectivity probes, run with the exact environment the app uses.
   app.get('/diag', async (_req, res) => {
     const tok = process.env.SUPERVISOR_TOKEN || '';

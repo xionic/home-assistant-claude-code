@@ -1,3 +1,6 @@
+## 1.14.0
+- **The diagnostic endpoints now require a Home Assistant admin token.** With **Debug mode** switched on, the app exposed a set of `/diag` endpoints that anything else on Home Assistant's internal app network could call with no credential at all — including one that runs a prompt with every tool auto-approved, and others that hand back your conversation transcripts. They now need a long-lived access token belonging to an **admin** user (`Authorization: Bearer <token>`), checked against Home Assistant itself, and refuse everything else. Nothing on your home network could ever reach them, and Debug mode is off by default, so a normal install was never exposed — but if you have it on, or you script `/diag`, you now need the header
+
 ## 1.13.0
 - **Claude Opus 5.5 is here** — Anthropic's new default Opus, with a 1M-token context window. It takes Opus 5's place in the menu; if you'd already picked Opus 5 it keeps working and still shows by name
 - **Updated to the current Claude Code engine** (Agent SDK 0.3.282, from 0.3.274)

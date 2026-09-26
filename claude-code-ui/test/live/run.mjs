@@ -18,11 +18,18 @@
  * Requires the `debug` app option to be on — without it the diagnostic routes
  * are not registered at all and every probe below returns the SPA.
  *
+ * The /diag checks also need a Home Assistant **admin's** long-lived access token.
+ * Without one they are skipped, not failed, and the rest of the suite still runs:
+ *
+ *   prsecret Home-assistant-token-nick -- npm run test:live
+ *   HA_API_TOKEN=<token> npm run test:live
+ *
  * Configuration (all optional, these are the defaults):
  *   HA_SSH_HOST=192.168.1.10  HA_SSH_PORT=222  HA_SSH_USER=hassio
  *   HA_SSH_KEY=~/.ssh/ha_claude  HA_ADDON_SLUG=local_claude-code-ui
+ *   HA_API_TOKEN / HOME_ASSISTANT_TOKEN_NICK  (no default — /diag checks skip)
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
@@ -42,23 +49,64 @@ const CFG = {
   slug: process.env.HA_ADDON_SLUG || 'local_claude-code-ui',
 };
 
+/**
+ * /diag now requires a Home Assistant admin's long-lived access token.
+ *
+ * HOME_ASSISTANT_TOKEN_NICK is the name privd delivers the enrolled secret under,
+ * so `prsecret Home-assistant-token-nick -- npm run test:live` needs no plumbing.
+ * With no token the /diag checks are skipped rather than failed — a missing
+ * credential is a configuration state, not a regression.
+ */
+const HA_TOKEN = process.env.HA_API_TOKEN || process.env.HOME_ASSISTANT_TOKEN_NICK || '';
+
 const results = [];
 let base = null;
 
 const c = { red: '\x1b[31m', green: '\x1b[32m', dim: '\x1b[2m', yellow: '\x1b[33m', reset: '\x1b[0m' };
 
-/** Run a shell command on the HA host (or here, with --local). */
-async function sh(command, { timeout = 60000 } = {}) {
-  if (LOCAL) {
-    const { stdout } = await execFileAsync('bash', ['-lc', command], { timeout, maxBuffer: 8 << 20 });
-    return stdout;
-  }
-  const args = [
+/** How the command is spelled, locally or over SSH to the HA host. */
+function argvFor(command) {
+  if (LOCAL) return ['bash', ['-lc', command]];
+  return ['ssh', [
     '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
     '-i', CFG.key, '-p', String(CFG.port), `${CFG.user}@${CFG.host}`, command,
-  ];
-  const { stdout } = await execFileAsync('ssh', args, { timeout, maxBuffer: 8 << 20 });
-  return stdout;
+  ]];
+}
+
+/**
+ * Run a shell command on the HA host (or here, with --local).
+ *
+ * `stdin` is piped in rather than interpolated into the command, so a secret sent
+ * this way never appears in a process's arguments — visible to anyone who can run
+ * `ps` on the HA host — nor in an error message that echoes the command.
+ */
+async function sh(command, { timeout = 60000, stdin = null } = {}) {
+  const [cmd, args] = argvFor(command);
+
+  if (stdin === null) {
+    const { stdout } = await execFileAsync(cmd, args, { timeout, maxBuffer: 8 << 20 });
+    return stdout;
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`timed out after ${timeout}ms`));
+    }, timeout);
+
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve(out);
+      reject(new Error(`exit ${code}: ${(err || out).slice(0, 300)}`));
+    });
+    child.stdin.end(stdin);
+  });
 }
 
 /**
@@ -76,9 +124,15 @@ function inContainer(command) {
 
 async function getJson(pathname, { timeout = 60000 } = {}) {
   const url = `${base}${pathname}`;
-  const body = await sh(`curl -s -m ${Math.floor(timeout / 1000)} ${JSON.stringify(url)}`, { timeout: timeout + 10000 });
+  // The token travels as a curl config file on stdin, so it stays out of argv.
+  const body = await sh(`curl -s -m ${Math.floor(timeout / 1000)} --config - ${JSON.stringify(url)}`, {
+    timeout: timeout + 10000,
+    stdin: `header = "Authorization: Bearer ${HA_TOKEN}"\n`,
+  });
+
+  let parsed;
   try {
-    return JSON.parse(body);
+    parsed = JSON.parse(body);
   } catch {
     const head = body.slice(0, 120).replace(/\s+/g, ' ');
     if (/<!doctype|<html/i.test(body)) {
@@ -86,6 +140,30 @@ async function getJson(pathname, { timeout = 60000 } = {}) {
     }
     throw new Error(`${pathname} did not return JSON: ${head}`);
   }
+
+  // The guard answers in JSON too, so say what happened rather than letting the
+  // caller trip over a missing field.
+  if (parsed?.error === 'unauthorized' || parsed?.error === 'forbidden') {
+    throw new Error(`${pathname} refused the token (${parsed.error}) — it must be a Home Assistant ` +
+      'long-lived access token belonging to an admin user');
+  }
+  if (parsed?.error === 'auth_unavailable') {
+    throw new Error(`${pathname} could not validate the token — the app could not reach Home Assistant`);
+  }
+  return parsed;
+}
+
+/**
+ * A check that needs /diag, and so needs a token. Without one it is skipped, in
+ * the same shape as the --with-agent and --mutating skips below.
+ */
+async function diagCheck(name, fn) {
+  if (!HA_TOKEN) {
+    console.log(`${c.dim}·${c.reset} ${name} ${c.yellow}skipped${c.reset} ` +
+      `${c.dim}(no HA_API_TOKEN / HOME_ASSISTANT_TOKEN_NICK — /diag needs an admin token)${c.reset}`);
+    return;
+  }
+  return check(name, fn);
 }
 
 async function check(name, fn) {
@@ -128,7 +206,7 @@ async function main() {
   });
 
   // ── Authentication and the HA tools ────────────────────────────────────────
-  await check('/diag says the Supervisor token authenticates everything', async () => {
+  await diagCheck('/diag says the Supervisor token authenticates everything', async () => {
     const diag = await getJson('/diag', { timeout: 120000 });
     assert(diag.env.has_SUPERVISOR_TOKEN, 'no SUPERVISOR_TOKEN in the container');
     const failed = Object.entries(diag.tests)
@@ -140,7 +218,7 @@ async function main() {
     return `${Object.keys(diag.tests).length} probes`;
   });
 
-  await check('no stale MCP server is persisted in ~/.claude.json', async () => {
+  await diagCheck('no stale MCP server is persisted in ~/.claude.json', async () => {
     const diag = await getJson('/diag', { timeout: 120000 });
     const mcp = diag.tests.claude_json_mcp.stdout || '';
     if (!mcp.trim()) return 'no .claude.json yet';
@@ -216,19 +294,19 @@ async function main() {
   });
 
   // ── Sessions and conversation ──────────────────────────────────────────────
-  await check('the session store is readable and titled', async () => {
+  await diagCheck('the session store is readable and titled', async () => {
     const list = await getJson('/diag/sesslist');
     assert(Array.isArray(list.sessions), 'no session list');
     assert(list.sessions.every((s) => s.title), 'a session came back with no title');
     return `${list.sessions.length} sessions, active ${list.active || 'none'}`;
   });
 
-  await check('the active conversation parses', async () => {
+  await diagCheck('the active conversation parses', async () => {
     const conv = await getJson('/diag/conv');
     return `${conv.count} items`;
   });
 
-  await check('auto-continue state is coherent', async () => {
+  await diagCheck('auto-continue state is coherent', async () => {
     const ac = await getJson('/diag/autocontinue');
     assert(typeof ac.enabled === 'boolean', 'no enabled flag');
     if (ac.pending) assert(ac.timerArmed, 'a resume is pending but no timer is armed');
@@ -237,7 +315,7 @@ async function main() {
 
   // ── Optional, costed ───────────────────────────────────────────────────────
   if (WITH_AGENT) {
-    await check('a real agent turn completes', async () => {
+    await diagCheck('a real agent turn completes', async () => {
       const q = encodeURIComponent('Reply with the single word: ok');
       const out = await getJson(`/diag/query?q=${q}`, { timeout: 180000 });
       const err = out.events.find((e) => e.error);
@@ -254,7 +332,7 @@ async function main() {
   }
 
   if (MUTATING) {
-    await check('one turn round-trips through the persistence path', async () => {
+    await diagCheck('one turn round-trips through the persistence path', async () => {
       const before = await getJson('/diag/conv');
       const out = await getJson('/diag/feed?q=Say%20hello%20in%20three%20words.', { timeout: 180000 });
       assert(out.count > before.count, 'the transcript did not grow');

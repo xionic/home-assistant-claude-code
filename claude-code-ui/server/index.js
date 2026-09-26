@@ -20,6 +20,7 @@
  *   run-query.js      one turn: SDK options in, wire events out
  *   ws-protocol.js    what a browser is told, and what it may ask for
  *   diag.js           the /diag routes (debug option only)
+ *   ha-auth.js        the HA admin-token guard those routes sit behind
  *   uploads.js        attachments
  *   ha-links.js       entity/automation link targets
  *   mcp.js            stripping persisted MCP servers at startup
