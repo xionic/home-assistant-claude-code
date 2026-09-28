@@ -15,6 +15,7 @@ export const MODEL_LABELS = {
   'claude-mythos-5': 'Mythos 5',
   'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
   'claude-sonnet-5': 'Sonnet 5',
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',

@@ -21,7 +21,7 @@ describe('a CLI that reports its model catalog', () => {
 
     const offered = await c.waitFor((m) => m.type === 'models' && m.models?.length);
     assert.deepEqual(offered.models.map((m) => m.value),
-      ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
+      ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5']);
     assert.equal(offered.models[0].displayName, 'Fable 5.1');
   });
 
@@ -29,7 +29,7 @@ describe('a CLI that reports its model catalog', () => {
     const later = await h.connect();
     const greeting = await later.waitFor((m) => m.type === 'models' && m.models?.length);
     assert.deepEqual(greeting.models.map((m) => m.value),
-      ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
+      ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5']);
   });
 });
 

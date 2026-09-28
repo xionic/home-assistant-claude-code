@@ -1,3 +1,8 @@
+## 1.15.0
+- **Claude Sonnet 5.5 is here** — it takes Sonnet 5's place in the menu; if you'd already picked Sonnet 5 it keeps working and still shows by name
+- The Home Assistant suggestions subagent now runs on Sonnet 5.5
+- **Updated to the current Claude Code engine** (Agent SDK 0.3.284, from 0.3.282)
+
 ## 1.14.0
 - **The diagnostic endpoints now require a Home Assistant admin token.** With **Debug mode** switched on, the app exposed a set of `/diag` endpoints that anything else on Home Assistant's internal app network could call with no credential at all — including one that runs a prompt with every tool auto-approved, and others that hand back your conversation transcripts. They now need a long-lived access token belonging to an **admin** user (`Authorization: Bearer <token>`), checked against Home Assistant itself, and refuse everything else. Nothing on your home network could ever reach them, and Debug mode is off by default, so a normal install was never exposed — but if you have it on, or you script `/diag`, you now need the header
 

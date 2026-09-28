@@ -87,10 +87,10 @@ describe('the rest of the UI', { skip: executablePath ? false : 'no Chrome found
   test('the settings panel remembers the model and effort you pick', async () => {
     await page.click('#settings-btn');
     await page.waitForSelector('#settings-panel:not(.hidden)', { timeout: 5000 });
-    await page.select('#model-select', 'claude-sonnet-5');
+    await page.select('#model-select', 'claude-sonnet-5-5');
     await page.select('#effort-select', 'low');
     const stored = await page.evaluate(() => [localStorage.getItem('model'), localStorage.getItem('effort')]);
-    assert.deepEqual(stored, ['claude-sonnet-5', 'low']);
+    assert.deepEqual(stored, ['claude-sonnet-5-5', 'low']);
     await page.click('#settings-btn');
   });
 
@@ -102,7 +102,7 @@ describe('the rest of the UI', { skip: executablePath ? false : 'no Chrome found
       () => [...document.querySelectorAll('#model-select option')].some((o) => o.value === 'claude-fable-5-1'),
       { timeout: 5000 });
     const selected = await page.$eval('#model-select', (el) => el.value);
-    assert.equal(selected, 'claude-sonnet-5', 'the earlier stored pick survives the catalog rebuild');
+    assert.equal(selected, 'claude-sonnet-5-5', 'the earlier stored pick survives the catalog rebuild');
   });
 
   test('slash-command autocomplete offers the app commands', async () => {
